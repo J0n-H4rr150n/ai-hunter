@@ -41,8 +41,28 @@ class RunbookParser:
                 raise ValueError(f"Runbook missing required field: {field}")
         
         # Validate metadata
-        if 'name' not in runbook['metadata']:
+        metadata = runbook['metadata']
+        if 'name' not in metadata:
             raise ValueError("Runbook metadata missing 'name'")
+        
+        # Validate v2.0 flow fields (optional but if present must be valid)
+        if 'prerequisites' in metadata:
+            prereqs = metadata['prerequisites']
+            if not isinstance(prereqs, dict):
+                raise ValueError("prerequisites must be a dict with 'required' and 'optional' keys")
+            if 'required' in prereqs and not isinstance(prereqs['required'], list):
+                raise ValueError("prerequisites.required must be a list")
+            if 'optional' in prereqs and not isinstance(prereqs['optional'], list):
+                raise ValueError("prerequisites.optional must be a list")
+        
+        if 'triggers' in metadata:
+            if not isinstance(metadata['triggers'], list):
+                raise ValueError("triggers must be a list")
+        
+        if 'next_runbooks' in metadata:
+            next_rbs = metadata['next_runbooks']
+            if not isinstance(next_rbs, dict):
+                raise ValueError("next_runbooks must be a dict")
         
         # Validate steps
         if not isinstance(runbook['steps'], list) or len(runbook['steps']) == 0:
@@ -217,3 +237,306 @@ class RunbookExecutor:
                     return step
         
         return None  # All steps complete or blocked
+
+
+class RunbookFlowManager:
+    """Manage runbook execution flow, dependencies, and transitions"""
+    
+    def __init__(self, parser: RunbookParser):
+        self.parser = parser
+        self.execution_history = []  # List of completed runbook names
+        self.findings_db = {}  # runbook_name -> findings dict
+        self.all_findings = {}  # Flat dict of all findings across runbooks
+    
+    def record_runbook_completion(self, runbook_name: str, findings: Dict[str, Any]):
+        """Record that a runbook has been completed with its findings"""
+        if runbook_name not in self.execution_history:
+            self.execution_history.append(runbook_name)
+        
+        self.findings_db[runbook_name] = findings
+        
+        # Merge findings into flat structure for pattern matching
+        for key, value in findings.items():
+            if key not in self.all_findings:
+                self.all_findings[key] = []
+            if isinstance(value, list):
+                self.all_findings[key].extend(value)
+            else:
+                self.all_findings[key].append(value)
+    
+    def check_prerequisites(self, runbook_name: str) -> tuple[bool, List[str]]:
+        """
+        Check if prerequisites are met for a runbook
+        Returns: (ready: bool, missing_prereqs: List[str])
+        """
+        try:
+            runbook = self.parser.load_runbook(runbook_name)
+        except FileNotFoundError:
+            return (False, [f"Runbook '{runbook_name}' not found"])
+        
+        metadata = runbook.get('metadata', {})
+        prerequisites = metadata.get('prerequisites', {})
+        
+        required = prerequisites.get('required', [])
+        missing = []
+        
+        for prereq in required:
+            if prereq not in self.execution_history:
+                missing.append(prereq)
+        
+        return (len(missing) == 0, missing)
+    
+    def get_eligible_runbooks(self, runbook_names: List[str] = None) -> List[Dict]:
+        """
+        Get runbooks whose prerequisites are satisfied
+        If runbook_names provided, check only those; otherwise check all in runbooks dir
+        """
+        if runbook_names is None:
+            # Discover all runbooks in directory
+            runbook_names = []
+            for yaml_file in self.parser.runbooks_dir.glob("*.yaml"):
+                runbook_names.append(yaml_file.stem)
+        
+        eligible = []
+        for rb_name in runbook_names:
+            if rb_name in self.execution_history:
+                continue  # Already completed
+            
+            ready, missing = self.check_prerequisites(rb_name)
+            if ready:
+                eligible.append({
+                    'name': rb_name,
+                    'triggers_confidence': self.evaluate_triggers(rb_name)
+                })
+        
+        # Sort by trigger confidence
+        eligible.sort(key=lambda x: x['triggers_confidence'], reverse=True)
+        return eligible
+    
+    def evaluate_triggers(self, runbook_name: str) -> float:
+        """
+        Evaluate if triggers match current findings
+        Returns confidence score 0.0-1.0
+        """
+        try:
+            runbook = self.parser.load_runbook(runbook_name)
+        except FileNotFoundError:
+            return 0.0
+        
+        metadata = runbook.get('metadata', {})
+        triggers = metadata.get('triggers', [])
+        
+        if not triggers:
+            return 0.5  # No triggers = neutral confidence
+        
+        total_confidence = 0.0
+        trigger_count = 0
+        
+        for trigger in triggers:
+            trigger_type = trigger.get('type', '')
+            
+            if trigger_type == 'manual':
+                # Manual triggers don't auto-activate
+                continue
+            
+            elif trigger_type == 'finding_match':
+                patterns = trigger.get('patterns', [])
+                source_runbook = trigger.get('source_runbook', '')
+                base_confidence = trigger.get('confidence', 0.5)
+                
+                # Check if source runbook was completed
+                if source_runbook and source_runbook not in self.execution_history:
+                    continue
+                
+                # Check if any patterns match findings
+                import re
+                matched = False
+                for pattern in patterns:
+                    pattern_str = str(pattern)
+                    # Search through all findings
+                    for finding_key, finding_values in self.all_findings.items():
+                        for val in finding_values:
+                            val_str = str(val)
+                            # Try literal match and regex match
+                            if pattern_str.lower() in val_str.lower():
+                                matched = True
+                                break
+                            try:
+                                if re.search(pattern_str, val_str, re.IGNORECASE):
+                                    matched = True
+                                    break
+                            except re.error:
+                                pass  # Not a valid regex, skip
+                        if matched:
+                            break
+                    if matched:
+                        break
+                
+                if matched:
+                    total_confidence += base_confidence
+                    trigger_count += 1
+        
+        if trigger_count == 0:
+            return 0.0
+        
+        # Return average confidence of matched triggers
+        return min(total_confidence / trigger_count, 1.0)
+    
+    def suggest_next_runbooks(self, current_runbook: str, findings: Dict[str, Any]) -> List[Dict]:
+        """
+        Based on current runbook & findings, suggest next runbooks
+        Returns list of dicts with: {name, condition, priority, description, confidence}
+        """
+        try:
+            runbook = self.parser.load_runbook(current_runbook)
+        except FileNotFoundError:
+            return []
+        
+        # Record completion first
+        self.record_runbook_completion(current_runbook, findings)
+        
+        metadata = runbook.get('metadata', {})
+        next_runbooks = metadata.get('next_runbooks', {})
+        
+        suggestions = []
+        
+        # Check on_success conditions
+        for next_rb in next_runbooks.get('on_success', []):
+            condition = next_rb.get('condition', '')
+            if self._evaluate_condition(condition, findings):
+                suggestions.append({
+                    'name': next_rb['runbook'],
+                    'condition': condition,
+                    'priority': next_rb.get('priority', 'medium'),
+                    'description': next_rb.get('description', ''),
+                    'reason': 'success_condition_met',
+                    'confidence': 0.8
+                })
+        
+        # Check on_failure conditions
+        for next_rb in next_runbooks.get('on_failure', []):
+            condition = next_rb.get('condition', '')
+            if self._evaluate_condition(condition, findings):
+                suggestions.append({
+                    'name': next_rb['runbook'],
+                    'condition': condition,
+                    'priority': next_rb.get('priority', 'medium'),
+                    'description': next_rb.get('description', ''),
+                    'reason': 'failure_condition_met',
+                    'confidence': 0.6
+                })
+        
+        # Always suggestions (baseline)
+        for next_rb in next_runbooks.get('always', []):
+            suggestions.append({
+                'name': next_rb['runbook'],
+                'condition': 'always',
+                'priority': next_rb.get('priority', 'low'),
+                'description': next_rb.get('description', ''),
+                'reason': 'baseline_suggestion',
+                'confidence': 0.3
+            })
+        
+        # Filter out runbooks with unmet prerequisites
+        filtered_suggestions = []
+        for suggestion in suggestions:
+            ready, missing = self.check_prerequisites(suggestion['name'])
+            if ready:
+                filtered_suggestions.append(suggestion)
+            else:
+                # Add note about missing prerequisites
+                suggestion['blocked'] = True
+                suggestion['missing_prerequisites'] = missing
+                filtered_suggestions.append(suggestion)
+        
+        # Sort by priority (high > medium > low) then confidence
+        priority_order = {'high': 3, 'medium': 2, 'low': 1}
+        filtered_suggestions.sort(
+            key=lambda x: (priority_order.get(x.get('priority', 'low'), 0), x.get('confidence', 0)),
+            reverse=True
+        )
+        
+        return filtered_suggestions
+    
+    def _evaluate_condition(self, condition: str, findings: Dict[str, Any]) -> bool:
+        """
+        Evaluate if a condition is met based on findings
+        Simple heuristic: check if condition string appears in findings keys/values
+        """
+        if not condition or condition == 'always':
+            return True
+        
+        condition_lower = condition.lower().replace('_', ' ')
+        
+        # Check in findings keys
+        for key in findings.keys():
+            if condition_lower in key.lower().replace('_', ' '):
+                return True
+        
+        # Check in findings values
+        for value in findings.values():
+            value_str = str(value).lower()
+            if condition_lower in value_str:
+                return True
+        
+        return False
+    
+    def build_execution_graph(self) -> Dict[str, Any]:
+        """
+        Build a dependency graph of all runbooks for visualization
+        Returns dict suitable for graph rendering
+        """
+        # Discover all runbooks
+        all_runbooks = []
+        for yaml_file in self.parser.runbooks_dir.glob("*.yaml"):
+            all_runbooks.append(yaml_file.stem)
+        
+        graph = {
+            'nodes': [],
+            'edges': []
+        }
+        
+        for rb_name in all_runbooks:
+            try:
+                runbook = self.parser.load_runbook(rb_name)
+                metadata = runbook.get('metadata', {})
+                
+                # Add node
+                graph['nodes'].append({
+                    'id': rb_name,
+                    'label': metadata.get('name', rb_name),
+                    'completed': rb_name in self.execution_history
+                })
+                
+                # Add prerequisite edges
+                prerequisites = metadata.get('prerequisites', {})
+                for prereq in prerequisites.get('required', []):
+                    graph['edges'].append({
+                        'from': prereq,
+                        'to': rb_name,
+                        'type': 'prerequisite',
+                        'required': True
+                    })
+                
+                for prereq in prerequisites.get('optional', []):
+                    graph['edges'].append({
+                        'from': prereq,
+                        'to': rb_name,
+                        'type': 'prerequisite',
+                        'required': False
+                    })
+                
+                # Add next_runbook edges
+                next_runbooks = metadata.get('next_runbooks', {})
+                for next_rb in next_runbooks.get('on_success', []):
+                    graph['edges'].append({
+                        'from': rb_name,
+                        'to': next_rb['runbook'],
+                        'type': 'next_on_success',
+                        'priority': next_rb.get('priority', 'medium')
+                    })
+                
+            except Exception as e:
+                print(f"Warning: Could not load runbook {rb_name}: {e}")
+        
+        return graph

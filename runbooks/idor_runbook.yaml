@@ -1,7 +1,278 @@
-1. complete init_runbook.yaml
-2. Review all findings from init_runbook.yaml for any IDOR patterns
-3. If any IDOR patterns are found, create a new iteration in the plan and add the IDOR patterns to the plan for testing
-4. get the human (hitl) to review/approve the plan
-5. once the plan is approved execute the steps
-6. document all findings properly
-7. provide a summary
+---
+# IDOR (Insecure Direct Object Reference) Testing Runbook
+# This runbook tests for broken access control vulnerabilities
+
+metadata:
+  name: "IDOR Testing"
+  version: "2.0"
+  description: "Test for insecure direct object references and broken access control"
+  author: "AI Hunter"
+  
+  # Prerequisites - what must be completed first
+  prerequisites:
+    required: ["init_runbook"]  # MUST complete initial recon first
+    optional: []
+  
+  # Triggers - conditions that activate this runbook
+  triggers:
+    - type: "finding_match"
+      description: "ID parameters found in URLs or requests"
+      patterns:
+        - "id="
+        - "user_id="
+        - "account_id="
+        - "doc_id="
+        - "file_id="
+        - "order_id="
+      source_runbook: "init_runbook"
+      confidence: 0.8
+    
+    - type: "finding_match"
+      description: "RESTful API endpoints with IDs"
+      patterns:
+        - "/api/users/[0-9]+"
+        - "/api/accounts/[0-9]+"
+        - "/api/documents/[0-9]+"
+        - "/api/files/[0-9]+"
+      source_runbook: "init_runbook"
+      confidence: 0.9
+    
+    - type: "manual"
+      description: "User explicitly requested IDOR testing"
+  
+  # What to run next based on findings
+  next_runbooks:
+    on_success:
+      - runbook: "privilege_escalation_runbook"
+        condition: "admin_access_gained"
+        priority: "high"
+        description: "IDOR allowed access to admin resources"
+      
+      - runbook: "data_exfiltration_runbook"
+        condition: "sensitive_data_exposed"
+        priority: "high"
+        description: "IDOR exposed PII or sensitive data"
+      
+      - runbook: "lateral_movement_runbook"
+        condition: "multi_user_access"
+        priority: "medium"
+        description: "Can access other users' resources"
+    
+    on_failure:
+      - runbook: "auth_bypass_runbook"
+        condition: "strong_auth_detected"
+        priority: "medium"
+        description: "Access controls working, try auth bypass"
+    
+    always:
+      - runbook: "session_management_runbook"
+        priority: "low"
+        description: "Test session handling and cookie security"
+
+# Main testing workflow
+steps:
+  - id: "analyze_init_findings"
+    name: "Analyze Initial Reconnaissance Findings"
+    action: "review_findings"
+    description: "Review findings from init_runbook for IDOR indicators"
+    depends_on: []
+    tool: "findings_analyzer"
+    analysis_targets:
+      - "URL parameters containing ID-like values"
+      - "API endpoints with numeric or UUID identifiers"
+      - "Hidden form fields with user/account references"
+      - "Network requests with predictable ID patterns"
+      - "Local storage containing user IDs or tokens"
+    findings_to_log:
+      - "List of all ID parameters discovered"
+      - "Endpoint patterns that accept IDs"
+      - "Current user's ID/account number"
+      - "ID format (numeric, UUID, encoded, etc)"
+      - "Authentication mechanism in use"
+  
+  - id: "identify_target_parameters"
+    name: "Identify Target Parameters for Testing"
+    action: "extract_parameters"
+    description: "Create list of specific parameters to test for IDOR"
+    depends_on: ["analyze_init_findings"]
+    tool: "parameter_extractor"
+    extraction_criteria:
+      - "Parameters likely to reference objects (user, account, document, etc)"
+      - "Parameters in authenticated requests"
+      - "Parameters that returned 200 OK responses"
+      - "Parameters with sequential or predictable values"
+    findings_to_log:
+      - "Target parameters ranked by IDOR probability"
+      - "Current user's reference values"
+      - "Test values to attempt (other user IDs)"
+      - "Expected responses for valid access"
+      - "Expected responses for denied access"
+  
+  - id: "baseline_legitimate_access"
+    name: "Establish Baseline Legitimate Access"
+    action: "test_access"
+    description: "Test current user's access to their own resources"
+    depends_on: ["identify_target_parameters"]
+    tool: "som_browser"
+    test_scenarios:
+      - "Access own profile/account with valid ID"
+      - "Access own documents/files with valid ID"
+      - "Access own orders/transactions with valid ID"
+      - "Note response codes, content, headers"
+    findings_to_log:
+      - "Successful access patterns (what should work)"
+      - "Response structure for valid access"
+      - "Authorization headers or cookies required"
+      - "Any CSRF tokens or anti-automation measures"
+  
+  - id: "test_horizontal_privilege_escalation"
+    name: "Test Horizontal Privilege Escalation"
+    action: "test_access"
+    description: "Attempt to access other users' resources at same privilege level"
+    depends_on: ["baseline_legitimate_access"]
+    tool: "som_browser"
+    test_scenarios:
+      - "Increment/decrement ID by 1"
+      - "Try sequential IDs (1, 2, 3, 100, 1000)"
+      - "Try common IDs (0, -1, 999999)"
+      - "If UUID, try modified UUIDs or null UUID"
+      - "Test without authentication headers"
+    findings_to_log:
+      - "IDs that returned 200 OK (vulnerable!)"
+      - "IDs that returned 403/401 (protected)"
+      - "IDs that returned 404 (doesn't exist vs hidden?)"
+      - "Any data disclosed from other users"
+      - "Any error messages revealing info"
+  
+  - id: "test_vertical_privilege_escalation"
+    name: "Test Vertical Privilege Escalation"
+    action: "test_access"
+    description: "Attempt to access admin/privileged resources"
+    depends_on: ["baseline_legitimate_access"]
+    tool: "som_browser"
+    test_scenarios:
+      - "Try admin user IDs (0, 1, admin, administrator)"
+      - "Try role-specific endpoints (/admin/*, /moderator/*)"
+      - "Test admin API endpoints discovered in init recon"
+      - "Modify user_type or role parameters if present"
+    findings_to_log:
+      - "Admin resources accessible (CRITICAL!)"
+      - "Admin endpoints discovered"
+      - "Privilege checks in place (Y/N)"
+      - "Any admin functionality exposed"
+  
+  - id: "test_parameter_tampering"
+    name: "Test Parameter Tampering Techniques"
+    action: "test_manipulation"
+    description: "Advanced IDOR techniques - wildcards, arrays, type confusion"
+    depends_on: ["test_horizontal_privilege_escalation"]
+    tool: "som_browser"
+    test_scenarios:
+      - "Wildcard injection (id=*, id=%, id=..)"
+      - "Array injection (id[]=1&id[]=2)"
+      - "Negative values (id=-1)"
+      - "Type confusion (id=1 vs id=\"1\" vs id=true)"
+      - "Path traversal in ID (id=../../admin)"
+      - "SQL injection in ID parameter (id=1' OR '1'='1)"
+    findings_to_log:
+      - "Successful parameter manipulation techniques"
+      - "Unexpected access or errors"
+      - "Multiple records returned inappropriately"
+      - "Database errors or stack traces"
+  
+  - id: "test_indirect_references"
+    name: "Test Indirect Object References"
+    action: "test_access"
+    description: "Test if app uses secure indirect references or direct database IDs"
+    depends_on: ["identify_target_parameters"]
+    tool: "som_browser"
+    test_scenarios:
+      - "Check if IDs are encrypted/hashed vs plaintext"
+      - "Test if session-specific references are used"
+      - "Verify if user context is enforced server-side"
+      - "Test reference tokens vs direct IDs"
+    findings_to_log:
+      - "Reference type (direct DB ID, UUID, hash, token)"
+      - "Server-side authorization checks present (Y/N)"
+      - "Session binding enforced (Y/N)"
+      - "Recommendations for secure implementation"
+  
+  - id: "document_findings"
+    name: "Document All IDOR Findings"
+    action: "compile_report"
+    description: "Aggregate all IDOR test results and create detailed report"
+    depends_on: [
+      "test_horizontal_privilege_escalation",
+      "test_vertical_privilege_escalation",
+      "test_parameter_tampering",
+      "test_indirect_references"
+    ]
+    tool: "findings_aggregator"
+    findings_to_log:
+      - "Summary of vulnerable endpoints"
+      - "Severity rating (CRITICAL/HIGH/MEDIUM/LOW)"
+      - "Proof of concept requests"
+      - "Affected user data disclosed"
+      - "Recommended remediation steps"
+  
+  - id: "hitl_review"
+    name: "Human-in-the-Loop Review"
+    action: "request_approval"
+    description: "Present findings to user for review before proceeding"
+    depends_on: ["document_findings"]
+    tool: "hitl_checkpoint"
+    approval_required: true
+    review_items:
+      - "All discovered IDOR vulnerabilities"
+      - "Severity and impact assessment"
+      - "Proposed next runbooks based on findings"
+      - "Whether to continue testing or stop"
+    findings_to_log:
+      - "User approval status"
+      - "User feedback or additional instructions"
+      - "Selected next runbook (if any)"
+
+# Post-testing analysis
+analysis:
+  - id: "risk_assessment"
+    name: "Assess IDOR Risk Level"
+    description: "Calculate overall risk based on findings"
+    criteria:
+      - "Can access other users' data? (Horizontal escalation)"
+      - "Can access admin resources? (Vertical escalation)"
+      - "What type of data is exposed? (PII, financial, credentials)"
+      - "How easy is exploitation? (trivial, moderate, complex)"
+      - "Are IDs predictable/sequential?"
+    outputs:
+      - "risk_score"
+      - "severity_rating"
+      - "exploitability_rating"
+  
+  - id: "recommend_next_steps"
+    name: "Recommend Next Testing Phase"
+    description: "Based on findings, suggest which runbook to execute next"
+    logic:
+      - "IF admin_access_gained THEN privilege_escalation_runbook"
+      - "IF sensitive_data_exposed THEN data_exfiltration_runbook"
+      - "IF no_idor_found AND strong_auth THEN auth_bypass_runbook"
+      - "ALWAYS CONSIDER session_management_runbook"
+    outputs:
+      - "next_runbook_suggestions"
+      - "priority_ranking"
+
+# Success criteria
+success_criteria:
+  - "All init_runbook prerequisites verified as complete"
+  - "Minimum 5 different ID parameters tested"
+  - "Both horizontal and vertical escalation tested"
+  - "At least 3 different manipulation techniques attempted"
+  - "Findings documented with proof-of-concept"
+  - "HITL review completed with user approval"
+  - "Next runbook recommended based on findings"
+
+# Failure conditions
+failure_criteria:
+  - "init_runbook not completed (missing prerequisites)"
+  - "No ID parameters found to test"
+  - "Cannot authenticate to test properly"
+  - "Application has rate limiting preventing tests"

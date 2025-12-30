@@ -1,0 +1,158 @@
+---
+# CTF IDOR Playbook
+# Objective: Test for Insecure Direct Object References in CTF/vulnerable apps
+
+metadata:
+  name: "CTF IDOR Testing"
+  version: "1.0"
+  description: "Comprehensive playbook for discovering and exploiting IDOR vulnerabilities in CTF environments"
+  objective: "Find and demonstrate IDOR vulnerabilities to capture flags or gain unauthorized access"
+  author: "AI Hunter"
+  category: "CTF"
+  difficulty: "beginner-intermediate"
+  estimated_duration: "30-60 minutes"
+  
+  # Tags for filtering in UI
+  tags:
+    - "ctf"
+    - "idor"
+    - "broken-access-control"
+    - "owasp-top10"
+
+# Runbook execution sequence
+sequence:
+  - runbook: "init_runbook"
+    stage: 1
+    name: "Initial Reconnaissance"
+    required: true
+    description: "Gather comprehensive information about target application"
+    hitl_checkpoint: false  # Auto-proceed to next runbook
+    on_complete:
+      action: "proceed"  # or "wait_for_approval"
+    on_failure:
+      action: "abort"  # Stop playbook if init fails
+      
+  - runbook: "idor_runbook"
+    stage: 2
+    name: "IDOR Testing"
+    required: true
+    description: "Test for insecure direct object references based on recon findings"
+    hitl_checkpoint: true  # Wait for user approval before proceeding
+    prerequisites:
+      findings_required:
+        - "ID parameters discovered"
+        - "API endpoints with numeric IDs"
+      minimum_findings: 1
+    on_complete:
+      action: "proceed"
+    on_failure:
+      action: "skip"  # If no IDOR found, continue to brainstorm
+      
+  - runbook: "brainstorm_runbook"
+    stage: 3
+    name: "Analysis & Next Steps"
+    required: true
+    description: "Analyze all findings and determine next actions"
+    hitl_checkpoint: true
+    on_complete:
+      action: "complete"  # End playbook
+    on_failure:
+      action: "complete"  # Always complete after brainstorm
+
+# Conditional branching based on findings
+conditional_steps:
+  # If IDOR found with admin access, add privilege escalation
+  - condition:
+      type: "finding_match"
+      pattern: "admin_access_gained|admin_endpoints"
+      source_runbook: "idor_runbook"
+    then:
+      insert_runbook: "privilege_escalation_runbook"
+      at_stage: 2.5  # Between stage 2 and 3
+      description: "Admin access discovered, attempting privilege escalation"
+  
+  # If no IDOR found, suggest auth bypass
+  - condition:
+      type: "finding_not_found"
+      pattern: "IDOR vulnerability"
+      source_runbook: "idor_runbook"
+    then:
+      suggest_playbook: "auth_bypass_playbook"
+      reason: "No IDOR found, authentication bypass may be worth trying"
+
+# Human-in-the-loop checkpoints
+hitl_checkpoints:
+  - stage: "before_stage_2"
+    message: "Initial reconnaissance complete. Review findings before starting IDOR tests."
+    options:
+      - action: "continue"
+        label: "Start IDOR Testing"
+      - action: "skip_to_stage"
+        target_stage: 3
+        label: "Skip to Brainstorm"
+      - action: "abort"
+        label: "Stop Playbook"
+  
+  - stage: "after_stage_2"
+    message: "IDOR testing complete. Review findings before analysis phase."
+    options:
+      - action: "continue"
+        label: "Proceed to Analysis"
+      - action: "retry_stage"
+        target_stage: 2
+        label: "Re-run IDOR Tests"
+      - action: "abort"
+        label: "Stop Playbook"
+
+# Playbook-level configuration
+configuration:
+  # Mission parameters
+  mission_goal: "Discover and document IDOR vulnerabilities"
+  success_metrics:
+    - "At least 1 IDOR vulnerability confirmed"
+    - "Unauthorized data access demonstrated"
+    - "Impact assessed (horizontal or vertical escalation)"
+  
+  # Testing constraints
+  constraints:
+    max_requests_per_minute: 100
+    timeout_per_runbook: 1800  # 30 minutes
+    require_auth: false  # CTFs often don't require auth
+    
+  # LLM settings for this playbook
+  llm_settings:
+    model: "gemini-2.0-flash-exp"
+    temperature: 0.3  # Lower temp for precise testing
+    budget_per_runbook: 50000  # Token budget
+  
+  # Reporting preferences
+  reporting:
+    generate_report_after_each_runbook: true
+    include_screenshots: true
+    proof_of_concept_required: true
+
+# Success criteria for entire playbook
+success_criteria:
+  required:
+    - "init_runbook completed successfully"
+    - "idor_runbook attempted (success not required)"
+    - "brainstorm_runbook completed"
+  optional:
+    - "At least 1 IDOR vulnerability found"
+    - "Impact demonstrated (horizontal or vertical)"
+    - "Remediation guidance provided"
+
+# Failure criteria (abort playbook if met)
+failure_criteria:
+  - "Target unreachable or offline"
+  - "Authentication required but not provided"
+  - "Rate limiting prevents testing"
+  - "User manually aborted"
+
+# Expected outputs
+outputs:
+  - "Comprehensive findings report"
+  - "List of vulnerable endpoints with POC"
+  - "Risk assessment for discovered issues"
+  - "Next steps recommendation from brainstorm"
+  - "Exploitation chain analysis (if applicable)"

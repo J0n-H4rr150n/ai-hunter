@@ -1,0 +1,3 @@
+- ctf runbook
+- put this at the end of a playbook to indicate to the agent that if it didn't find a `FLAG` of some sort it needs to then brainstorm/rethink and propose next steps or questions.
+

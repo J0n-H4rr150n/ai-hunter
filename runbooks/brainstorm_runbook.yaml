@@ -1,0 +1,218 @@
+---
+# Brainstorm & Analysis Runbook
+# Final step in playbooks - analyze all findings and recommend next actions
+
+metadata:
+  name: "Brainstorm & Analysis"
+  version: "1.0"
+  description: "Analyze all findings from previous runbooks and generate strategic recommendations"
+  author: "AI Hunter"
+  
+  # This runbook is typically used at the end of a playbook
+  # Can be used after any runbook sequence
+  prerequisites:
+    required: []  # Flexible - can run after any runbook(s)
+    optional: ["init_runbook"]  # Works best with some prior context
+
+# Analysis and planning workflow
+steps:
+  - id: "aggregate_all_findings"
+    name: "Aggregate All Findings"
+    action: "compile_findings"
+    description: "Collect and organize all findings from previous runbooks in this playbook"
+    depends_on: []
+    tool: "findings_aggregator"
+    aggregation_strategy:
+      - "Group by runbook source"
+      - "Categorize by finding type (vuln, config, info disclosure, etc)"
+      - "Identify patterns across runbooks"
+      - "Flag high-severity items"
+    findings_to_log:
+      - "Total findings count by category"
+      - "Critical/High severity findings"
+      - "Patterns and correlations identified"
+      - "Technology stack summary"
+  
+  - id: "analyze_attack_surface"
+    name: "Analyze Attack Surface"
+    action: "assess_surface"
+    description: "Evaluate the overall attack surface based on findings"
+    depends_on: ["aggregate_all_findings"]
+    tool: "attack_surface_analyzer"
+    analysis_criteria:
+      - "Entry points discovered (forms, APIs, file uploads, etc)"
+      - "Authentication mechanisms identified"
+      - "Authorization controls observed"
+      - "Data handling patterns"
+      - "Client-side vs server-side attack vectors"
+      - "Potential privilege escalation paths"
+    findings_to_log:
+      - "Attack surface map"
+      - "High-value targets ranked"
+      - "Unexplored areas"
+      - "Quick wins vs complex attacks"
+  
+  - id: "identify_vulnerability_chains"
+    name: "Identify Vulnerability Chains"
+    action: "chain_analysis"
+    description: "Look for combinations of findings that create exploitation chains"
+    depends_on: ["analyze_attack_surface"]
+    tool: "chain_analyzer"
+    chain_patterns:
+      - "IDOR + Info disclosure = Account takeover"
+      - "XSS + Session fixation = Session hijacking"
+      - "SQLi + File upload = RCE"
+      - "CSRF + Privilege escalation = Admin compromise"
+      - "Path traversal + Arbitrary file read = Source code disclosure"
+    findings_to_log:
+      - "Identified exploitation chains"
+      - "Prerequisites for each chain"
+      - "Impact assessment per chain"
+      - "Difficulty rating (easy, medium, hard)"
+  
+  - id: "assess_risk_and_impact"
+    name: "Assess Risk and Impact"
+    action: "risk_assessment"
+    description: "Evaluate business risk and potential impact of discovered issues"
+    depends_on: ["identify_vulnerability_chains"]
+    tool: "risk_calculator"
+    risk_factors:
+      - "Data sensitivity (PII, financial, credentials)"
+      - "User base affected (single user, all users, admin)"
+      - "Exploitability (trivial, moderate, complex)"
+      - "Business impact (low, medium, high, critical)"
+      - "Compliance implications (GDPR, PCI-DSS, etc)"
+    findings_to_log:
+      - "Risk matrix (likelihood × impact)"
+      - "CVSS scores where applicable"
+      - "Business impact summary"
+      - "Compliance violations"
+  
+  - id: "generate_testing_recommendations"
+    name: "Generate Testing Recommendations"
+    action: "recommend_tests"
+    description: "Suggest additional tests and unexplored attack vectors"
+    depends_on: ["assess_risk_and_impact"]
+    tool: "test_recommender"
+    recommendation_logic:
+      - "IF APIs found AND not tested → Suggest API fuzzing"
+      - "IF file upload AND not tested → Suggest file upload bypass"
+      - "IF authentication found → Suggest auth bypass techniques"
+      - "IF multiple roles detected → Suggest privilege escalation"
+      - "IF session management observed → Suggest session attacks"
+      - "IF custom crypto detected → Suggest crypto analysis"
+    findings_to_log:
+      - "Recommended runbooks to execute"
+      - "Untested attack vectors"
+      - "Areas needing deeper investigation"
+      - "Priority order for next tests"
+  
+  - id: "create_exploitation_plan"
+    name: "Create Exploitation Plan"
+    action: "plan_exploitation"
+    description: "If authorized, create step-by-step exploitation plan"
+    depends_on: ["identify_vulnerability_chains", "assess_risk_and_impact"]
+    tool: "exploit_planner"
+    planning_stages:
+      - "Initial access vector"
+      - "Privilege escalation path"
+      - "Lateral movement opportunities"
+      - "Data exfiltration methods"
+      - "Persistence mechanisms"
+      - "Clean-up and detection avoidance"
+    findings_to_log:
+      - "Exploitation roadmap"
+      - "Required tools and scripts"
+      - "Expected indicators of compromise"
+      - "Rollback/cleanup procedures"
+  
+  - id: "draft_remediation_guidance"
+    name: "Draft Remediation Guidance"
+    action: "generate_fixes"
+    description: "Provide preliminary remediation recommendations"
+    depends_on: ["assess_risk_and_impact"]
+    tool: "remediation_advisor"
+    remediation_categories:
+      - "Quick fixes (configuration changes)"
+      - "Code changes required"
+      - "Architecture improvements"
+      - "Compensating controls"
+      - "Detection and monitoring"
+    findings_to_log:
+      - "Remediation recommendations by finding"
+      - "Priority order for fixes"
+      - "Estimated effort (low, medium, high)"
+      - "Security best practices"
+  
+  - id: "generate_summary_report"
+    name: "Generate Summary Report"
+    action: "compile_report"
+    description: "Create human-readable summary of all analysis"
+    depends_on: [
+      "aggregate_all_findings",
+      "analyze_attack_surface",
+      "identify_vulnerability_chains",
+      "assess_risk_and_impact",
+      "generate_testing_recommendations",
+      "draft_remediation_guidance"
+    ]
+    tool: "report_generator"
+    report_sections:
+      - "Executive summary"
+      - "Key findings (top 10)"
+      - "Attack surface overview"
+      - "Exploitation chains discovered"
+      - "Risk assessment"
+      - "Recommended next steps"
+      - "Remediation priorities"
+    findings_to_log:
+      - "Markdown report content"
+      - "Findings statistics"
+      - "Visual charts/graphs data"
+  
+  - id: "hitl_review"
+    name: "Human Review & Decision"
+    action: "request_approval"
+    description: "Present analysis to user for review and next action decision"
+    depends_on: ["generate_summary_report"]
+    tool: "hitl_checkpoint"
+    approval_required: true
+    review_items:
+      - "Summary report with all findings and analysis"
+      - "Recommended runbooks/playbooks to execute next"
+      - "Exploitation plan (if applicable and authorized)"
+      - "Decision: Continue testing, switch playbook, or stop"
+    findings_to_log:
+      - "User decision (continue/stop/switch)"
+      - "Selected next playbook/runbook"
+      - "User feedback and additional instructions"
+
+# Post-brainstorm outputs
+outputs:
+  - id: "next_actions"
+    name: "Next Actions Determined"
+    description: "Clear actionable next steps based on analysis"
+    output_types:
+      - "next_playbook_recommendation"
+      - "specific_runbooks_to_execute"
+      - "manual_testing_required"
+      - "mission_complete"
+  
+  - id: "knowledge_base_update"
+    name: "Update Knowledge Base"
+    description: "Store insights and patterns for future missions"
+    stored_items:
+      - "Successful attack patterns for this tech stack"
+      - "False positive indicators"
+      - "Effective testing strategies"
+      - "Time budget per finding type"
+
+# Success criteria
+success_criteria:
+  - "All previous runbook findings aggregated and analyzed"
+  - "At least 3 exploitation chains identified (if findings support)"
+  - "Risk assessment completed for all high/critical findings"
+  - "Specific testing recommendations generated"
+  - "Summary report created and presented"
+  - "User has reviewed and provided next action decision"
+  - "Clear action plan exists for next phase"

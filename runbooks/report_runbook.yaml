@@ -1,0 +1,317 @@
+---
+# Report Generation Runbook
+# Generate different types of reports for different audiences
+
+metadata:
+  name: "Report Generation"
+  version: "1.0"
+  description: "Generate comprehensive security reports tailored to different audiences"
+  author: "AI Hunter"
+  
+  prerequisites:
+    required: []
+    optional: ["brainstorm_runbook"]  # Works best after analysis complete
+  
+  # Can be manually triggered or auto at playbook end
+  triggers:
+    - type: "playbook_complete"
+      description: "Playbook finished, time to report findings"
+      confidence: 1.0
+    
+    - type: "manual"
+      description: "User requests report generation"
+
+steps:
+  - id: "gather_all_findings"
+    name: "Gather All Findings"
+    action: "findings_aggregation"
+    description: "Collect all findings from completed runbooks"
+    depends_on: []
+    tool: "findings_aggregator"
+    aggregation_scope:
+      - "All runbook findings"
+      - "Screenshots and evidence"
+      - "Tool outputs"
+      - "Exploitation POCs"
+      - "Timeline of discoveries"
+    findings_to_log:
+      - "Total findings collected"
+      - "Finding categories"
+      - "Evidence files collected"
+  
+  - id: "classify_findings"
+    name: "Classify Findings"
+    action: "classification"
+    description: "Categorize and prioritize all findings"
+    depends_on: ["gather_all_findings"]
+    tool: "finding_classifier"
+    classification_dimensions:
+      - "Severity (Critical, High, Medium, Low, Info)"
+      - "Type (IDOR, XSS, SQLi, Config, Info Disclosure, etc)"
+      - "OWASP Top 10 mapping"
+      - "CWE mapping"
+      - "Exploitability (Easy, Medium, Hard)"
+      - "Business impact"
+    findings_to_log:
+      - "Findings by severity"
+      - "Findings by type"
+      - "OWASP Top 10 coverage"
+  
+  - id: "generate_executive_summary"
+    name: "Generate Executive Summary"
+    action: "executive_report"
+    description: "Non-technical summary for executives and management"
+    depends_on: ["classify_findings"]
+    tool: "executive_report_generator"
+    report_format: "markdown"
+    sections:
+      - name: "Overview"
+        content: "High-level mission summary, objectives, scope"
+      - name: "Key Findings"
+        content: "Top 5 critical/high findings in business terms"
+      - name: "Risk Assessment"
+        content: "Overall security posture, business risk"
+      - name: "Recommendations"
+        content: "Strategic recommendations (not technical)"
+      - name: "Next Steps"
+        content: "What should happen next"
+    style:
+      - "Non-technical language"
+      - "Business impact focused"
+      - "Visual charts/graphs"
+      - "1-2 pages maximum"
+    findings_to_log:
+      - "Executive summary generated"
+      - "Page count"
+  
+  - id: "generate_technical_report"
+    name: "Generate Technical Report"
+    action: "technical_report"
+    description: "Detailed technical report for security team and developers"
+    depends_on: ["classify_findings"]
+    tool: "technical_report_generator"
+    report_format: "markdown"
+    sections:
+      - name: "Executive Summary"
+        content: "Brief overview"
+      - name: "Methodology"
+        content: "Runbooks executed, tools used, timeframe"
+      - name: "Findings"
+        content: "Detailed findings with POCs, screenshots"
+        subsections:
+          - "Critical Severity"
+          - "High Severity"
+          - "Medium Severity"
+          - "Low Severity"
+          - "Informational"
+      - name: "Exploitation Chains"
+        content: "Combined vulnerabilities that create higher risk"
+      - name: "Remediation Guidance"
+        content: "Step-by-step fixes for each finding"
+      - name: "References"
+        content: "OWASP, CWE, CVE references"
+      - name: "Appendix"
+        content: "Tool outputs, raw data, additional screenshots"
+    style:
+      - "Technical detail"
+      - "Code snippets and POCs"
+      - "Screenshots with annotations"
+      - "Step-by-step reproduction"
+    findings_to_log:
+      - "Technical report generated"
+      - "Total pages"
+      - "Screenshots included"
+  
+  - id: "generate_developer_report"
+    name: "Generate Developer-Focused Report"
+    action: "developer_report"
+    description: "Actionable report for developers to fix issues"
+    depends_on: ["classify_findings"]
+    tool: "developer_report_generator"
+    report_format: "markdown"
+    sections:
+      - name: "Vulnerabilities by Component"
+        content: "Group findings by affected file/component"
+      - name: "Code-Level Fixes"
+        content: "Example code showing vulnerable vs secure implementation"
+      - name: "Testing Guidance"
+        content: "How to verify fixes work"
+      - name: "Prevention Best Practices"
+        content: "Coding standards to prevent recurrence"
+    style:
+      - "Code-focused"
+      - "IDE-friendly format"
+      - "Diff-style recommendations"
+      - "Links to secure coding guides"
+    findings_to_log:
+      - "Developer report generated"
+      - "Code examples included"
+  
+  - id: "generate_compliance_report"
+    name: "Generate Compliance Report"
+    action: "compliance_report"
+    description: "Report mapped to compliance frameworks (PCI-DSS, GDPR, etc)"
+    depends_on: ["classify_findings"]
+    tool: "compliance_report_generator"
+    frameworks:
+      - "PCI-DSS"
+      - "GDPR"
+      - "HIPAA"
+      - "SOC 2"
+      - "ISO 27001"
+    report_format: "markdown"
+    sections:
+      - name: "Compliance Summary"
+        content: "Pass/fail for each framework"
+      - name: "Control Gaps"
+        content: "Which controls are not met"
+      - name: "Findings by Framework"
+        content: "Map findings to specific requirements"
+      - name: "Remediation Roadmap"
+        content: "Priority fixes for compliance"
+    findings_to_log:
+      - "Compliance report generated"
+      - "Frameworks assessed"
+      - "Compliance score per framework"
+  
+  - id: "generate_retest_report"
+    name: "Generate Retest Report"
+    action: "retest_report"
+    description: "Report comparing current vs previous test results"
+    depends_on: ["classify_findings"]
+    tool: "retest_report_generator"
+    report_format: "markdown"
+    prerequisites:
+      - "Previous mission data available"
+    sections:
+      - name: "Retest Summary"
+        content: "Overall improvement or regression"
+      - name: "Fixed Issues"
+        content: "Vulnerabilities successfully remediated"
+      - name: "Persistent Issues"
+        content: "Vulnerabilities still present"
+      - name: "New Issues"
+        content: "New vulnerabilities discovered"
+      - name: "Metrics"
+        content: "Before/after comparison charts"
+    findings_to_log:
+      - "Retest report generated"
+      - "Fixed vs persistent ratio"
+      - "New issues introduced"
+  
+  - id: "generate_ctf_writeup"
+    name: "Generate CTF Writeup"
+    action: "ctf_writeup"
+    description: "Educational writeup for CTF challenges"
+    depends_on: ["gather_all_findings"]
+    tool: "ctf_writeup_generator"
+    report_format: "markdown"
+    sections:
+      - name: "Challenge Overview"
+        content: "What the challenge was testing"
+      - name: "Reconnaissance"
+        content: "What we discovered initially"
+      - name: "Exploitation"
+        content: "Step-by-step attack chain"
+      - name: "Flag Capture"
+        content: "How we obtained the flag"
+      - name: "Lessons Learned"
+        content: "Key takeaways and techniques"
+      - name: "Alternative Solutions"
+        content: "Other ways to solve it"
+    style:
+      - "Educational tone"
+      - "Step-by-step walkthrough"
+      - "Screenshots of each step"
+      - "Commands and tools explained"
+    findings_to_log:
+      - "CTF writeup generated"
+      - "Flag captured (Y/N)"
+  
+  - id: "package_evidence"
+    name: "Package Evidence"
+    action: "evidence_packaging"
+    description: "Collect and organize all evidence files"
+    depends_on: ["gather_all_findings"]
+    tool: "evidence_packager"
+    packaging_strategy:
+      - "Create evidence archive"
+      - "Screenshots organized by finding"
+      - "Network captures"
+      - "Tool outputs"
+      - "Exploit POCs"
+      - "Chain of custody log"
+    findings_to_log:
+      - "Evidence package created"
+      - "Archive location"
+      - "Total files packaged"
+      - "Archive size"
+  
+  - id: "select_report_formats"
+    name: "Select Report Formats"
+    action: "format_selection"
+    description: "Determine which reports to generate based on context"
+    depends_on: ["classify_findings"]
+    tool: "report_selector"
+    selection_logic:
+      - "IF playbook type == 'ctf' THEN generate ctf_writeup"
+      - "IF enterprise target THEN generate executive + technical + compliance"
+      - "IF bug_bounty THEN generate technical report only"
+      - "IF retest mission THEN generate retest_report"
+      - "IF user specified THEN generate specified reports"
+    findings_to_log:
+      - "Report types selected"
+      - "Generation order"
+  
+  - id: "deliver_reports"
+    name: "Deliver Reports"
+    action: "report_delivery"
+    description: "Output reports in requested formats and locations"
+    depends_on: [
+      "generate_executive_summary",
+      "generate_technical_report",
+      "generate_developer_report",
+      "generate_compliance_report",
+      "package_evidence"
+    ]
+    tool: "report_deliverer"
+    delivery_options:
+      - "Save to local filesystem"
+      - "Upload to cloud storage"
+      - "Send via API"
+      - "Generate shareable links"
+      - "Email (if configured)"
+    output_formats:
+      - "Markdown (.md)"
+      - "PDF (via pandoc)"
+      - "HTML"
+      - "JSON (raw data)"
+    findings_to_log:
+      - "Reports delivered"
+      - "Delivery locations"
+      - "Access links"
+
+# Success criteria
+success_criteria:
+  - "All findings aggregated"
+  - "At least 1 report generated"
+  - "Evidence packaged"
+  - "Reports delivered to specified location"
+
+# Outputs
+outputs:
+  - id: "executive_report"
+    description: "Executive summary report"
+    format: "markdown"
+    
+  - id: "technical_report"
+    description: "Full technical report"
+    format: "markdown"
+    
+  - id: "evidence_package"
+    description: "Archived evidence"
+    format: "zip"
+    
+  - id: "report_manifest"
+    description: "List of all generated reports"
+    format: "json"

@@ -1,0 +1,262 @@
+---
+# Learning & Continuous Improvement Runbook
+# Analyze agent performance and update knowledge base
+
+metadata:
+  name: "Learning & Improvement"
+  version: "1.0"
+  description: "Analyze agent decisions, learn from successes/failures, and update knowledge base"
+  author: "AI Hunter"
+  
+  # Typically run at end of missions or periodically
+  prerequisites:
+    required: []
+    optional: ["init_runbook", "brainstorm_runbook"]  # Works best with mission data
+  
+  # Triggers
+  triggers:
+    - type: "mission_complete"
+      description: "Mission completed successfully or failed"
+      confidence: 1.0
+    
+    - type: "significant_finding"
+      description: "Agent discovered something novel or unexpected"
+      confidence: 0.8
+    
+    - type: "user_correction"
+      description: "User corrected agent's approach or reasoning"
+      confidence: 0.9
+    
+    - type: "scheduled"
+      description: "Periodic learning (e.g., after every 10 missions)"
+      confidence: 0.5
+
+steps:
+  - id: "collect_mission_data"
+    name: "Collect Mission Data"
+    action: "data_collection"
+    description: "Gather all data from current mission for analysis"
+    depends_on: []
+    tool: "mission_data_collector"
+    data_sources:
+      - "All runbook findings"
+      - "LLM decisions and reasoning"
+      - "Tool usage and results"
+      - "Errors and failures"
+      - "User feedback and corrections"
+      - "Time spent per task"
+      - "Token usage per step"
+    findings_to_log:
+      - "Total data points collected"
+      - "Mission success/failure status"
+      - "User satisfaction indicators"
+  
+  - id: "analyze_llm_decisions"
+    name: "Analyze LLM Decisions"
+    action: "decision_analysis"
+    description: "Review LLM's reasoning and decision quality"
+    depends_on: ["collect_mission_data"]
+    tool: "llm_decision_analyzer"
+    analysis_dimensions:
+      - "Was reasoning sound? (logical, follows best practices)"
+      - "Were tools selected appropriately?"
+      - "Were parameters/configurations optimal?"
+      - "Did agent adapt when approach failed?"
+      - "Were there missed opportunities?"
+    findings_to_log:
+      - "Strong decisions (to reinforce)"
+      - "Poor decisions (to learn from)"
+      - "Decision patterns observed"
+      - "Reasoning quality score (1-10)"
+  
+  - id: "identify_user_corrections"
+    name: "Identify User Corrections"
+    action: "correction_extraction"
+    description: "Extract and analyze user feedback and corrections"
+    depends_on: ["collect_mission_data"]
+    tool: "correction_analyzer"
+    correction_types:
+      - "Approach corrections (wrong strategy)"
+      - "Tool corrections (wrong tool selected)"
+      - "Parameter corrections (settings adjusted)"
+      - "Scope corrections (out of bounds)"
+      - "Priority corrections (wrong focus)"
+    findings_to_log:
+      - "Number of corrections by type"
+      - "Most common correction patterns"
+      - "Severity of corrections"
+      - "Context where corrections occurred"
+  
+  - id: "evaluate_tool_effectiveness"
+    name: "Evaluate Tool Effectiveness"
+    action: "tool_evaluation"
+    description: "Assess which tools worked well and which didn't"
+    depends_on: ["collect_mission_data"]
+    tool: "tool_effectiveness_evaluator"
+    evaluation_criteria:
+      - "Success rate per tool"
+      - "False positive rate"
+      - "Time to result"
+      - "Token cost"
+      - "Reliability/consistency"
+      - "User satisfaction with results"
+    findings_to_log:
+      - "Most effective tools (ranked)"
+      - "Least effective tools"
+      - "Tool combinations that worked"
+      - "Recommended tool parameter updates"
+  
+  - id: "extract_successful_patterns"
+    name: "Extract Successful Patterns"
+    action: "pattern_extraction"
+    description: "Identify repeatable success patterns"
+    depends_on: ["analyze_llm_decisions", "evaluate_tool_effectiveness"]
+    tool: "pattern_extractor"
+    pattern_types:
+      - "Vulnerability discovery patterns"
+      - "Exploitation chains that worked"
+      - "Effective testing sequences"
+      - "Successful reasoning approaches"
+      - "Time-saving shortcuts"
+    findings_to_log:
+      - "New patterns discovered"
+      - "Pattern frequency/reliability"
+      - "Context where patterns apply"
+      - "Pattern confidence scores"
+  
+  - id: "extract_failure_patterns"
+    name: "Extract Failure Patterns"
+    action: "failure_analysis"
+    description: "Identify what went wrong and why"
+    depends_on: ["analyze_llm_decisions", "identify_user_corrections"]
+    tool: "failure_analyzer"
+    failure_categories:
+      - "False positives generated"
+      - "Missed vulnerabilities"
+      - "Incorrect reasoning"
+      - "Inefficient approaches"
+      - "Resource waste (time/tokens)"
+      - "Out-of-scope actions"
+    findings_to_log:
+      - "Failure patterns identified"
+      - "Root causes"
+      - "Prevention strategies"
+      - "Early warning signs"
+  
+  - id: "generate_learning_updates"
+    name: "Generate Learning Updates"
+    action: "learning_synthesis"
+    description: "Create structured learning updates for knowledge base"
+    depends_on: [
+      "extract_successful_patterns",
+      "extract_failure_patterns",
+      "identify_user_corrections"
+    ]
+    tool: "learning_synthesizer"
+    update_categories:
+      - "New best practices to add"
+      - "Anti-patterns to avoid"
+      - "Tool usage guidelines updates"
+      - "Reasoning heuristics improvements"
+      - "Decision tree refinements"
+    findings_to_log:
+      - "Number of learning updates generated"
+      - "Update categories"
+      - "Confidence in each update"
+      - "Expected impact on future performance"
+  
+  - id: "update_vector_database"
+    name: "Update Vector Database"
+    action: "vector_db_update"
+    description: "Store mission embeddings and learnings in vector DB"
+    depends_on: ["generate_learning_updates"]
+    tool: "vector_db_manager"
+    storage_strategy:
+      - "Embed mission summary and findings"
+      - "Store successful patterns with context"
+      - "Store failure patterns as negative examples"
+      - "Link to original mission data"
+      - "Tag with technology stack"
+    findings_to_log:
+      - "Embeddings created"
+      - "Vector DB updated successfully"
+      - "Searchable mission count increased"
+  
+  - id: "update_prompt_templates"
+    name: "Update Prompt Templates"
+    action: "prompt_refinement"
+    description: "Refine system and user prompts based on learnings"
+    depends_on: ["generate_learning_updates"]
+    tool: "prompt_template_manager"
+    refinement_approach:
+      - "Add successful reasoning examples"
+      - "Add warnings about common pitfalls"
+      - "Update tool selection guidance"
+      - "Refine tone/style if needed"
+      - "Add domain-specific knowledge"
+    findings_to_log:
+      - "Prompt templates updated"
+      - "Changes made (diff summary)"
+      - "Expected impact on reasoning quality"
+  
+  - id: "update_runbook_effectiveness"
+    name: "Update Runbook Effectiveness Scores"
+    action: "runbook_scoring"
+    description: "Track which runbooks are most effective"
+    depends_on: ["collect_mission_data"]
+    tool: "runbook_scorer"
+    scoring_criteria:
+      - "Success rate"
+      - "Finding quality"
+      - "Time efficiency"
+      - "User satisfaction"
+      - "False positive rate"
+    findings_to_log:
+      - "Runbook effectiveness scores updated"
+      - "Top performing runbooks"
+      - "Runbooks needing improvement"
+      - "Recommended runbook modifications"
+  
+  - id: "generate_improvement_report"
+    name: "Generate Improvement Report"
+    action: "report_generation"
+    description: "Create report summarizing learning cycle results"
+    depends_on: [
+      "update_vector_database",
+      "update_prompt_templates",
+      "update_runbook_effectiveness"
+    ]
+    tool: "report_generator"
+    report_sections:
+      - "Learning summary"
+      - "Performance improvements made"
+      - "Knowledge base updates"
+      - "Metrics before vs after"
+      - "Recommended manual improvements"
+    findings_to_log:
+      - "Improvement report generated"
+      - "Key metrics improved"
+      - "Areas still needing work"
+
+# Success criteria
+success_criteria:
+  - "Mission data collected successfully"
+  - "At least 1 learning update generated"
+  - "Vector database updated"
+  - "No errors during knowledge base updates"
+  - "Improvement report generated"
+
+# Outputs
+outputs:
+  - id: "learning_updates"
+    description: "Structured learning updates"
+    format: "json"
+    persistent: true
+    
+  - id: "performance_metrics"
+    description: "Before/after performance metrics"
+    format: "json"
+    
+  - id: "improvement_report"
+    description: "Human-readable improvement report"
+    format: "markdown"

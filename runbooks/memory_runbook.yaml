@@ -1,0 +1,184 @@
+---
+# Memory Search Runbook
+# Use when agent is stuck or needs context from previous missions
+
+metadata:
+  name: "Memory Search & Recall"
+  version: "1.0"
+  description: "Search historical missions and findings for relevant context and solutions"
+  author: "AI Hunter"
+  
+  # This is a utility runbook - can be called anytime
+  prerequisites:
+    required: []
+    optional: []
+  
+  # Triggers for automatic activation
+  triggers:
+    - type: "agent_stuck"
+      description: "Agent has attempted same action 3+ times without progress"
+      confidence: 0.9
+    
+    - type: "low_confidence"
+      description: "Agent's confidence score below 0.5 for current task"
+      confidence: 0.8
+    
+    - type: "similar_context"
+      description: "Current context matches previous mission (same tech stack, similar objective)"
+      confidence: 0.7
+    
+    - type: "manual"
+      description: "User or agent explicitly requests memory search"
+
+steps:
+  - id: "identify_query_context"
+    name: "Identify Search Context"
+    action: "extract_context"
+    description: "Extract key context from current situation to search memory"
+    depends_on: []
+    tool: "context_extractor"
+    extraction_targets:
+      - "Current objective/goal"
+      - "Technology stack in use"
+      - "Current runbook and step"
+      - "Recent errors or failures"
+      - "Specific challenge or blocker"
+    findings_to_log:
+      - "Search query formulated"
+      - "Key context parameters"
+      - "Similarity search criteria"
+  
+  - id: "search_historical_missions"
+    name: "Search Historical Missions"
+    action: "vector_search"
+    description: "Search vector database of past missions for similar situations"
+    depends_on: ["identify_query_context"]
+    tool: "vector_db_search"
+    search_strategy:
+      - "Semantic similarity search on mission objectives"
+      - "Technology stack matching"
+      - "Error pattern matching"
+      - "Success pattern matching"
+    search_parameters:
+      top_k: 10
+      similarity_threshold: 0.7
+      filters:
+        - "successful_missions_preferred"
+        - "same_tech_stack_boost"
+    findings_to_log:
+      - "Number of similar missions found"
+      - "Top 5 most relevant missions"
+      - "Similarity scores"
+      - "Key differences from current situation"
+  
+  - id: "extract_relevant_learnings"
+    name: "Extract Relevant Learnings"
+    action: "analyze_matches"
+    description: "Extract actionable insights from similar past missions"
+    depends_on: ["search_historical_missions"]
+    tool: "learning_extractor"
+    extraction_criteria:
+      - "What worked in similar situations"
+      - "What didn't work (avoid mistakes)"
+      - "Tool/technique recommendations"
+      - "Common pitfalls and workarounds"
+      - "Estimated time to solution"
+    findings_to_log:
+      - "Recommended approaches (ranked)"
+      - "Techniques to avoid"
+      - "Similar challenges overcome"
+      - "Success rate for each approach"
+  
+  - id: "search_similar_findings"
+    name: "Search Similar Findings"
+    action: "findings_search"
+    description: "Look for similar findings (vulns, configs) in past missions"
+    depends_on: ["identify_query_context"]
+    tool: "findings_db_search"
+    search_targets:
+      - "Similar vulnerabilities discovered"
+      - "Similar technology configurations"
+      - "Similar security patterns"
+      - "Exploitation chains used"
+    findings_to_log:
+      - "Similar vulnerabilities found previously"
+      - "Exploitation techniques that worked"
+      - "False positives to avoid"
+      - "Expected difficulty level"
+  
+  - id: "retrieve_tool_usage_patterns"
+    name: "Retrieve Tool Usage Patterns"
+    action: "tool_pattern_search"
+    description: "Find how tools were effectively used in similar contexts"
+    depends_on: ["search_historical_missions"]
+    tool: "tool_usage_analyzer"
+    analysis_focus:
+      - "Which tools were most effective"
+      - "Tool parameter configurations used"
+      - "Tool combinations that worked"
+      - "Tools that failed or gave false positives"
+    findings_to_log:
+      - "Recommended tool sequence"
+      - "Effective tool parameters"
+      - "Tool effectiveness scores"
+  
+  - id: "synthesize_recommendations"
+    name: "Synthesize Recommendations"
+    action: "generate_guidance"
+    description: "Combine all memory search results into actionable recommendations"
+    depends_on: [
+      "extract_relevant_learnings",
+      "search_similar_findings",
+      "retrieve_tool_usage_patterns"
+    ]
+    tool: "recommendation_synthesizer"
+    synthesis_approach:
+      - "Rank recommendations by similarity and success rate"
+      - "Identify highest confidence next steps"
+      - "Note any contradictions in historical data"
+      - "Estimate success probability"
+    findings_to_log:
+      - "Top 3 recommended next steps"
+      - "Confidence score for each recommendation"
+      - "Expected time to execute each"
+      - "Alternative approaches if primary fails"
+  
+  - id: "apply_learnings"
+    name: "Apply Learnings to Current Task"
+    action: "context_injection"
+    description: "Inject memory-based insights into agent's current context"
+    depends_on: ["synthesize_recommendations"]
+    tool: "context_updater"
+    application_strategy:
+      - "Add recommendations to agent's current prompt"
+      - "Update tool selection preferences"
+      - "Adjust confidence scores based on history"
+      - "Set expectations for success/failure"
+    findings_to_log:
+      - "Context successfully updated"
+      - "Agent confidence boosted (Y/N)"
+      - "New actions agent will attempt"
+
+# Success criteria
+success_criteria:
+  - "At least 1 similar historical mission found"
+  - "Actionable recommendations generated"
+  - "Agent context updated with learnings"
+  - "Clear next steps identified"
+  - "Confidence score improved or situation clarified"
+
+# Outputs
+outputs:
+  - id: "memory_insights"
+    description: "Structured insights from memory search"
+    format: "json"
+    contents:
+      - "similar_missions"
+      - "recommended_actions"
+      - "things_to_avoid"
+      - "success_probability"
+  
+  - id: "next_actions"
+    description: "Specific next actions for agent to attempt"
+    format: "list"
+    priority_ranked: true
