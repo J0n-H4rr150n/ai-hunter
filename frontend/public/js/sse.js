@@ -212,6 +212,24 @@ export function connectToSSE() {
             window.updatePlaybookProgress(null); // Clear progress
         }
     });
+
+    // Playbook paused
+    state.eventSource.addEventListener('playbook_paused', (event) => {
+        const data = JSON.parse(event.data);
+        addToFeed({
+            message: '⏸️  Playbook paused',
+            timestamp: data.timestamp || new Date().toISOString()
+        });
+    });
+
+    // Playbook resumed
+    state.eventSource.addEventListener('playbook_resumed', (event) => {
+        const data = JSON.parse(event.data);
+        addToFeed({
+            message: '▶️  Playbook resumed',
+            timestamp: data.timestamp || new Date().toISOString()
+        });
+    });
 }
 
 function updateStatus(status, text) {

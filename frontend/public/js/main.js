@@ -5,10 +5,16 @@ import { loadMissionHistory, initMissionSelector, initNewMissionButton, updatePl
 import { initEvidenceModal } from './evidence.js';
 import { loadSettings, initSettingsModal } from './settings.js';
 import { switchSidebarTab } from './plan.js';
+import { pausePlaybook, resumePlaybook, createCheckpoint, showCheckpoints, restoreCheckpoint, initCheckpointModal } from './checkpoints.js';
 
 // Export for use in SSE handler and inline onclick handlers
 window.updatePlaybookProgress = updatePlaybookProgress;
 window.switchSidebarTab = switchSidebarTab;
+window.pausePlaybook = pausePlaybook;
+window.resumePlaybook = resumePlaybook;
+window.createCheckpoint = createCheckpoint;
+window.showCheckpoints = showCheckpoints;
+window.restoreCheckpoint = restoreCheckpoint;
 
 document.addEventListener('DOMContentLoaded', () => {
     // Initialize all modules
@@ -20,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initNewMissionButton();
     initEvidenceModal();
     initSettingsModal();
+    initCheckpointModal();
 
     console.log('✅ AI Hunter UI initialized');
 });

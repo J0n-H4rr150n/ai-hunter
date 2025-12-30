@@ -200,11 +200,16 @@ async function showPlaybookInfo(playbookName) {
 // Update playbook progress in sidebar
 export function updatePlaybookProgress(data) {
     const container = document.getElementById('playbook-progress-container');
+    const controls = document.getElementById('playbook-controls');
     
     if (!data || !data.playbook_name) {
         container.innerHTML = '<div class="text-sm text-gray-400 text-center py-8">No playbook running</div>';
+        controls.classList.add('hidden');
         return;
     }
+
+    // Show controls when playbook is running
+    controls.classList.remove('hidden');
 
     const html = `
         <div class="space-y-3">

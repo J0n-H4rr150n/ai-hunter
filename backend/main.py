@@ -653,6 +653,10 @@ async def execute_playbook_mission(
             quota=quota
         )
         
+        # Store executor in active missions for checkpoint access
+        if mission_id in active_missions:
+            active_missions[mission_id]['executor'] = executor
+        
         # Progress callback for UI updates
         async def progress_callback(progress_data: dict):
             """Publish playbook progress updates"""
@@ -734,6 +738,116 @@ async def execute_playbook_mission(
             del active_missions[mission_id]
         if mission_id in tool_approval_queues:
             del tool_approval_queues[mission_id]
+
+@app.post("/api/missions/{mission_id}/checkpoint")
+async def create_mission_checkpoint(mission_id: int):
+    """Create a checkpoint for a running playbook mission"""
+    if mission_id not in active_missions:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    
+    mission_info = active_missions[mission_id]
+    
+    # Check if this is a playbook mission with executor
+    if 'executor' not in mission_info:
+        raise HTTPException(status_code=400, detail="Mission is not a playbook mission")
+    
+    executor = mission_info['executor']
+    
+    try:
+        checkpoint_name = await executor.create_checkpoint()
+        return {
+            "checkpoint_name": checkpoint_name,
+            "mission_id": mission_id,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        backend_logger.error(f"Failed to create checkpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/missions/{mission_id}/checkpoints")
+async def list_mission_checkpoints(mission_id: int):
+    """List all checkpoints for a mission"""
+    try:
+        state_mgr = StateManager(db)
+        checkpoints = await state_mgr.list_checkpoints(mission_id)
+        return checkpoints
+    except Exception as e:
+        backend_logger.error(f"Failed to list checkpoints: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/missions/{mission_id}/restore")
+async def restore_mission_checkpoint(mission_id: int, checkpoint_name: str):
+    """Restore a mission from a checkpoint"""
+    if mission_id not in active_missions:
+        raise HTTPException(status_code=404, detail="Mission not found or not running")
+    
+    mission_info = active_missions[mission_id]
+    
+    if 'executor' not in mission_info:
+        raise HTTPException(status_code=400, detail="Mission is not a playbook mission")
+    
+    executor = mission_info['executor']
+    
+    try:
+        success = await executor.restore_checkpoint(checkpoint_name)
+        if not success:
+            raise HTTPException(status_code=404, detail="Checkpoint not found")
+        
+        return {
+            "restored": True,
+            "checkpoint_name": checkpoint_name,
+            "mission_id": mission_id,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        backend_logger.error(f"Failed to restore checkpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/missions/{mission_id}/pause-playbook")
+async def pause_playbook_mission(mission_id: int):
+    """Pause a running playbook mission"""
+    if mission_id not in active_missions:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    
+    mission_info = active_missions[mission_id]
+    
+    if 'executor' not in mission_info:
+        raise HTTPException(status_code=400, detail="Mission is not a playbook mission")
+    
+    executor = mission_info['executor']
+    executor.pause_execution()
+    
+    await redis_mgr.publish_event("missions:all", {
+        "type": "playbook_paused",
+        "mission_id": mission_id,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
+    return {"paused": True, "mission_id": mission_id}
+
+@app.post("/api/missions/{mission_id}/resume-playbook")
+async def resume_playbook_mission(mission_id: int):
+    """Resume a paused playbook mission"""
+    if mission_id not in active_missions:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    
+    mission_info = active_missions[mission_id]
+    
+    if 'executor' not in mission_info:
+        raise HTTPException(status_code=400, detail="Mission is not a playbook mission")
+    
+    executor = mission_info['executor']
+    executor.resume_execution()
+    
+    await redis_mgr.publish_event("missions:all", {
+        "type": "playbook_resumed",
+        "mission_id": mission_id,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
+    return {"resumed": True, "mission_id": mission_id}
 
 @app.post("/api/missions/{mission_id}/approve")
 async def approve_plan(mission_id: int, approval: PlanApproval):

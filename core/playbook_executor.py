@@ -47,6 +47,47 @@ class PlaybookExecutorContext:
         self.abort_requested = False
         self.completed_runbooks = []
         self.failed_runbooks = []
+        self.current_stage = 0
+        self.current_runbook = None
+        self.checkpoint_enabled = True
+        
+    def to_checkpoint_dict(self) -> Dict[str, Any]:
+        """Serialize context to dict for checkpointing"""
+        return {
+            'mission_id': self.mission_id,
+            'goal': self.goal,
+            'target_url': self.target_url,
+            'instructions': self.instructions,
+            'playbook_name': self.playbook_name,
+            'current_stage': self.current_stage,
+            'current_runbook': self.current_runbook,
+            'completed_runbooks': self.completed_runbooks,
+            'failed_runbooks': self.failed_runbooks,
+            'all_findings': self.all_findings,
+            'finding_count': self.finding_count,
+            'paused': self.paused,
+            'playbook': self.playbook  # Full playbook definition
+        }
+    
+    @classmethod
+    def from_checkpoint_dict(cls, data: Dict[str, Any]) -> 'PlaybookExecutorContext':
+        """Restore context from checkpoint dict"""
+        ctx = cls(
+            mission_id=data['mission_id'],
+            goal=data['goal'],
+            target_url=data['target_url'],
+            instructions=data.get('instructions')
+        )
+        ctx.playbook_name = data.get('playbook_name')
+        ctx.current_stage = data.get('current_stage', 0)
+        ctx.current_runbook = data.get('current_runbook')
+        ctx.completed_runbooks = data.get('completed_runbooks', [])
+        ctx.failed_runbooks = data.get('failed_runbooks', [])
+        ctx.all_findings = data.get('all_findings', {})
+        ctx.finding_count = data.get('finding_count', 0)
+        ctx.paused = data.get('paused', False)
+        ctx.playbook = data.get('playbook')
+        return ctx
 
 
 class PlaybookExecutor:
@@ -63,34 +104,67 @@ class PlaybookExecutor:
     - Handle errors gracefully with rollback
     """
     
-    def __init__(self, autonomous_loop, db):
+    def __init__(self, autonomous_loop=None, db=None, playbook_manager=None, 
+                 state_manager=None, tracker=None, repo=None, quota=None):
         """
         Args:
-            autonomous_loop: AutonomousLoop instance (provides access to tools, browser, agent)
+            autonomous_loop: AutonomousLoop instance (legacy, provides access to tools, browser, agent)
             db: Database instance for persistence
+            playbook_manager: Optional PlaybookManager (for standalone use)
+            state_manager: Optional StateManager (for standalone use)
+            tracker: Optional AgentTracker (for standalone use)
+            repo: Optional FindingRepository (for standalone use)
+            quota: Optional QuotaManager (for standalone use)
         """
-        self.loop = autonomous_loop
-        self.db = db
+        # Support both legacy and new initialization patterns
+        if autonomous_loop:
+            # Legacy pattern: autonomous_loop provides everything
+            self.loop = autonomous_loop
+            self.db = db
+            self.manager = PlaybookManager()
+            self.state_manager = StateManager(db)
+            self.finding_repo = autonomous_loop.repo
+            self.tracker = getattr(autonomous_loop, 'tracker', None)
+            self.quota = getattr(autonomous_loop, 'quota', None)
+        else:
+            # New pattern: direct component injection
+            self.loop = None
+            self.db = db
+            self.manager = playbook_manager or PlaybookManager()
+            self.state_manager = state_manager
+            self.finding_repo = repo
+            self.tracker = tracker
+            self.quota = quota
         
         # Core components
-        self.manager = PlaybookManager()
         self.runbook_parser = RunbookParser()
         self.flow_manager = RunbookFlowManager(self.runbook_parser)
-        self.state_manager = StateManager(db)
-        self.finding_repo = autonomous_loop.repo
         
         # Tool mapper for action execution
-        self.tool_mapper = ToolMapper(
-            browser=autonomous_loop.browser if hasattr(autonomous_loop, 'browser') else None,
-            scanner=autonomous_loop.scanner if hasattr(autonomous_loop, 'scanner') else None,
-            fuzzer=autonomous_loop.fuzzer if hasattr(autonomous_loop, 'fuzzer') else None,
-            repo=autonomous_loop.repo
-        )
+        if autonomous_loop:
+            self.tool_mapper = ToolMapper(
+                browser=autonomous_loop.browser if hasattr(autonomous_loop, 'browser') else None,
+                scanner=autonomous_loop.scanner if hasattr(autonomous_loop, 'scanner') else None,
+                fuzzer=autonomous_loop.fuzzer if hasattr(autonomous_loop, 'fuzzer') else None,
+                repo=autonomous_loop.repo
+            )
+        else:
+            # Create minimal tool mapper for standalone use
+            self.tool_mapper = ToolMapper(
+                browser=None,
+                scanner=None,
+                fuzzer=None,
+                repo=repo
+            )
         
         # Execution context
         self.context: Optional[PlaybookExecutorContext] = None
         self.current_runbook_executor: Optional[RunbookExecutor] = None
         self.progress_callback: Optional[callable] = None
+        
+        # Checkpoint configuration
+        self.auto_checkpoint = True  # Auto-checkpoint after each runbook
+        self.checkpoint_interval = 1  # Checkpoint every N runbooks
         
     def _log(self, message: str, screenshot: dict = None):
         """Log to UI and console"""
@@ -109,6 +183,88 @@ class PlaybookExecutor:
                     self.progress_callback(progress_data)
             except Exception as e:
                 print(f"[Playbook] Error publishing progress: {e}")
+    
+    async def create_checkpoint(self, checkpoint_name: str = None) -> str:
+        """Create a checkpoint of current playbook state"""
+        if not self.context:
+            raise PlaybookExecutionError("No active context to checkpoint")
+        
+        # Generate checkpoint name if not provided
+        if not checkpoint_name:
+            checkpoint_name = f"auto_stage_{self.context.current_stage}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        
+        # Serialize context
+        checkpoint_data = self.context.to_checkpoint_dict()
+        
+        # Save to StateManager
+        await self.state_manager.checkpoint(
+            mission_id=self.context.mission_id,
+            name=checkpoint_name,
+            full_state=checkpoint_data
+        )
+        
+        self._log(f"[Checkpoint] 💾 Saved checkpoint: {checkpoint_name}")
+        
+        # Publish checkpoint event
+        await self._publish_progress({
+            'checkpoint_created': checkpoint_name,
+            'stage': self.context.current_stage,
+            'runbooks_completed': len(self.context.completed_runbooks)
+        })
+        
+        return checkpoint_name
+    
+    async def restore_checkpoint(self, checkpoint_name: str) -> bool:
+        """Restore playbook state from checkpoint"""
+        self._log(f"[Checkpoint] 🔄 Restoring checkpoint: {checkpoint_name}")
+        
+        # Load checkpoint data
+        checkpoint_data = await self.state_manager.restore_checkpoint(
+            mission_id=self.context.mission_id if self.context else 0,
+            name=checkpoint_name
+        )
+        
+        if not checkpoint_data:
+            self._log(f"[Checkpoint] ❌ Checkpoint not found: {checkpoint_name}")
+            return False
+        
+        # Restore context
+        self.context = PlaybookExecutorContext.from_checkpoint_dict(checkpoint_data)
+        
+        self._log(f"[Checkpoint] ✅ Restored to stage {self.context.current_stage}")
+        self._log(f"[Checkpoint] 📊 Completed runbooks: {len(self.context.completed_runbooks)}")
+        
+        # Publish restore event
+        await self._publish_progress({
+            'checkpoint_restored': checkpoint_name,
+            'stage': self.context.current_stage,
+            'runbooks_completed': len(self.context.completed_runbooks)
+        })
+        
+        return True
+    
+    async def list_checkpoints(self) -> List[Dict[str, Any]]:
+        """List all checkpoints for current mission"""
+        if not self.context:
+            return []
+        
+        return await self.state_manager.list_checkpoints(self.context.mission_id)
+    
+    def pause_execution(self):
+        """Pause playbook execution at next safe point"""
+        if self.context:
+            self.context.paused = True
+            self._log("[Playbook] ⏸️  Pause requested - will pause after current step")
+    
+    def resume_execution(self):
+        """Resume paused playbook execution"""
+        if self.context:
+            self.context.paused = False
+            self._log("[Playbook] ▶️  Resuming execution")
+    
+    def is_paused(self) -> bool:
+        """Check if execution is paused"""
+        return self.context.paused if self.context else False
     async def execute_playbook(self, playbook_name: str, goal: str = None, 
                               target_url: str = None, mission_id: int = None,
                               instructions: str = None,
@@ -241,8 +397,14 @@ class PlaybookExecutor:
                     self.flow_manager.record_runbook_completion(runbook_name, findings)
                     self.context.completed_runbooks.append(runbook_name)
                     self.context.all_findings[runbook_name] = findings
+                    self.context.current_stage = stage
                     
                     self._log(f"[Playbook] ✅ Stage {stage} complete: {runbook_name}")
+                    
+                    # Auto-checkpoint after runbook completion
+                    if self.auto_checkpoint and stage % self.checkpoint_interval == 0:
+                        checkpoint_name = await self.create_checkpoint()
+                        self._log(f"[Checkpoint] 💾 Auto-saved: {checkpoint_name}")
                     
                     # Publish runbook completed
                     await self._publish_progress({
@@ -310,6 +472,11 @@ class PlaybookExecutor:
         """
         
         self._log(f"[Runbook] 🔧 Loading runbook: {runbook_name}")
+        
+        # Update context
+        if self.context:
+            self.context.current_stage = stage
+            self.context.current_runbook = runbook_name
         
         # Publish runbook started
         await self._publish_progress({
