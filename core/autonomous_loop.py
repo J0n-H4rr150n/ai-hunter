@@ -106,7 +106,7 @@ class AutonomousLoop:
         
         return approval_response
 
-    def start_mission(self, goal: str, target_url: str, instructions: str = None):
+    async def start_mission(self, goal: str, target_url: str, instructions: str = None):
         """Bootstraps the mission and starts the loop with LLM-generated plan and human approval."""
         
         self.log_to_ui(f"\n[Auto] 🚀 Starting Autonomous Mission: {goal}")
@@ -858,7 +858,7 @@ class AutonomousLoop:
         all_summaries = await self.db.get_all_iteration_summaries(mission_id)
         
         # Get mission details
-       mission = await self.db.get_mission(mission_id)
+        mission = await self.db.get_mission(mission_id)
         target_url = mission.get('target_url')
         instructions = mission.get('instructions')
         

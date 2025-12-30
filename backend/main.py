@@ -530,15 +530,7 @@ async def list_playbooks():
     """List all available playbooks"""
     try:
         playbook_mgr = PlaybookManager()
-        playbooks = []
-        
-        for name, playbook in playbook_mgr.playbooks.items():
-            playbooks.append({
-                "name": name,
-                "metadata": playbook.get("metadata", {}),
-                "category": playbook.get("metadata", {}).get("category", "unknown")
-            })
-        
+        playbooks = playbook_mgr.list_available_playbooks()
         return playbooks
     except Exception as e:
         backend_logger.error(f"Failed to list playbooks: {e}")
@@ -549,7 +541,7 @@ async def get_playbook(playbook_name: str):
     """Get details of a specific playbook"""
     try:
         playbook_mgr = PlaybookManager()
-        playbook = playbook_mgr.get_playbook(playbook_name)
+        playbook = playbook_mgr.load_playbook(playbook_name)
         
         if not playbook:
             raise HTTPException(status_code=404, detail="Playbook not found")
@@ -572,7 +564,7 @@ async def start_playbook_mission(mission: PlaybookMissionStart):
     
     # Validate playbook exists
     playbook_mgr = PlaybookManager()
-    playbook = playbook_mgr.get_playbook(mission.playbook_name)
+    playbook = playbook_mgr.load_playbook(mission.playbook_name)
     if not playbook:
         raise HTTPException(status_code=404, detail=f"Playbook '{mission.playbook_name}' not found")
     

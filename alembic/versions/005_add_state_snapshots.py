@@ -1,16 +1,16 @@
 """
 Add state_snapshots table for state management system
 
-Revision ID: 004
-Revises: 003
+Revision ID: 005_add_state_snapshots
+Revises: 004_add_iterations
 Create Date: 2025-01-01 00:00:00.000000
 """
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = '004'
-down_revision = '003'
+revision = '005_add_state_snapshots'
+down_revision = '004_add_iterations'
 branch_labels = None
 depends_on = None
 

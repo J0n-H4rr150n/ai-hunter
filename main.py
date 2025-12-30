@@ -1,5 +1,6 @@
 import sys
 import time
+import asyncio
 from config.config import Config
 from core.quota_manager import QuotaManager
 from memory.finding_repository import FindingRepository
@@ -82,7 +83,7 @@ def main():
                     instructions = instructions.strip('"').strip("'")
                 
                 # Hand over control to the Autonomous Loop
-                auto_pilot.start_mission(goal, target, instructions)
+                asyncio.run(auto_pilot.start_mission(goal, target, instructions))
                 
                 print("\n[✅] Mission Loop Finished. Returning to manual control.")
 
