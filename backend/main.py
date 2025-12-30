@@ -90,6 +90,108 @@ async def publish_mission_update(mission_id: int, message: str, event_type: str 
     
     await redis_mgr.publish_event("missions:all", event_data)
 
+# API endpoint to serve screenshots
+@app.get("/api/screenshots/{date}/{mission_id}/{filename}")
+async def get_screenshot(date: str, mission_id: str, filename: str):
+    """Serve screenshot images from hive_bucket"""
+    from fastapi.responses import FileResponse
+    import os
+    
+    # Construct path to screenshot
+    screenshot_path = Path(__file__).parent.parent / "hive_bucket" / "screenshots" / date / mission_id / filename
+    
+    backend_logger.debug(f"Screenshot request: {screenshot_path}")
+    
+    if not screenshot_path.exists():
+        backend_logger.warning(f"Screenshot not found: {screenshot_path}")
+        raise HTTPException(status_code=404, detail="Screenshot not found")
+    
+    return FileResponse(screenshot_path, media_type="image/png")
+
+@app.get("/api/missions/{mission_id}/artifacts")
+async def get_mission_artifacts(mission_id: int):
+    """Get all artifacts (screenshots, metadata) for a mission"""
+    from datetime import date
+    import glob
+    
+    artifacts = {
+        "screenshots": [],
+        "metadata": [],
+        "findings": []
+    }
+    
+    # Find mission directory
+    today = date.today().strftime("%Y-%m-%d")
+    mission_dir = Path(__file__).parent.parent / "hive_bucket" / "screenshots" / today / f"mission_{mission_id}"
+    
+    if mission_dir.exists():
+        # List all screenshots
+        for png_file in mission_dir.glob("*.png"):
+            json_file = png_file.with_suffix('.json')
+            artifact = {
+                "type": "screenshot",
+                "filename": png_file.name,
+                "timestamp": png_file.stem.split('_')[0],
+                "action": '_'.join(png_file.stem.split('_')[1:]),
+                "url": f"/api/screenshots/{today}/mission_{mission_id}/{png_file.name}",
+                "has_metadata": json_file.exists(),
+                "metadata_url": f"/api/missions/{mission_id}/metadata/{json_file.name}" if json_file.exists() else None
+            }
+            artifacts["screenshots"].append(artifact)
+        
+        # List all metadata files
+        for json_file in mission_dir.glob("*.json"):
+            artifacts["metadata"].append({
+                "filename": json_file.name,
+                "url": f"/api/missions/{mission_id}/metadata/{json_file.name}"
+            })
+    
+    # Get findings from repository
+    findings_dir = Path(__file__).parent.parent / "hive_bucket" / "findings"
+    if findings_dir.exists():
+        for type_dir in findings_dir.iterdir():
+            if type_dir.is_dir():
+                for finding_file in type_dir.glob("*.json"):
+                    artifacts["findings"].append({
+                        "type": type_dir.name,
+                        "filename": finding_file.name,
+                        "url": f"/api/findings/{type_dir.name}/{finding_file.name}"
+                    })
+    
+    return artifacts
+
+@app.get("/api/missions/{mission_id}/metadata/{filename}")
+async def get_mission_metadata(mission_id: int, filename: str):
+    """Serve metadata JSON files"""
+    from fastapi.responses import JSONResponse
+    from datetime import date
+    
+    today = date.today().strftime("%Y-%m-%d")
+    metadata_path = Path(__file__).parent.parent / "hive_bucket" / "screenshots" / today / f"mission_{mission_id}" / filename
+    
+    if not metadata_path.exists():
+        raise HTTPException(status_code=404, detail="Metadata not found")
+    
+    with open(metadata_path, 'r') as f:
+        data = json.load(f)
+    
+    return JSONResponse(content=data)
+
+@app.get("/api/findings/{finding_type}/{filename}")
+async def get_finding(finding_type: str, filename: str):
+    """Serve finding JSON files"""
+    from fastapi.responses import JSONResponse
+    
+    finding_path = Path(__file__).parent.parent / "hive_bucket" / "findings" / finding_type / filename
+    
+    if not finding_path.exists():
+        raise HTTPException(status_code=404, detail="Finding not found")
+    
+    with open(finding_path, 'r') as f:
+        data = json.load(f)
+    
+    return JSONResponse(content=data)
+
 # Utility function for Docker networking
 def transform_url_for_docker(url: str) -> str:
     """Transform localhost URLs to work from inside Docker container"""

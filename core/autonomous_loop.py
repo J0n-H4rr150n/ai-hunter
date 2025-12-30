@@ -46,15 +46,30 @@ class AutonomousLoop:
     def _send_screenshot_to_ui(self, message: str, shadow_result: dict):
         """Send a screenshot to the UI via callback."""
         if self.ui_callback and shadow_result:
-            import base64
-            # Encode screenshot as base64 for transmission
-            screenshot_b64 = base64.b64encode(shadow_result["screenshot_bytes"]).decode('utf-8')
-            screenshot_data = {
-                "data": screenshot_b64,
-                "path": shadow_result["relative_path"]
-            }
-            self.log_to_ui(message, screenshot=screenshot_data)
+            print(f"[DEBUG] Sending screenshot to UI: {shadow_result.get('relative_path')}")
+            
+            # Instead of base64, send the path to fetch via API
+            # Path format: screenshots/2025-12-30/mission_17/18-17-16-271_scan_complete.png
+            relative_path = shadow_result["relative_path"]
+            parts = relative_path.replace("\\", "/").split("/")
+            
+            if len(parts) >= 4:  # screenshots/date/mission/file.png
+                date = parts[1]
+                mission_id = parts[2]
+                filename = parts[3]
+                api_url = f"/api/screenshots/{date}/{mission_id}/{filename}"
+                
+                screenshot_data = {
+                    "url": api_url,
+                    "path": relative_path
+                }
+                print(f"[DEBUG] Screenshot API URL: {api_url}")
+                self.log_to_ui(message, screenshot=screenshot_data)
+            else:
+                print(f"[DEBUG] Invalid path format: {relative_path}")
+                self.log_to_ui(message)
         else:
+            print(f"[DEBUG] Screenshot NOT sent - callback: {self.ui_callback is not None}, shadow_result: {shadow_result is not None}")
             # Fallback to regular log
             self.log_to_ui(message)
     
@@ -554,35 +569,75 @@ class AutonomousLoop:
         by_type = {}
         critical_vulns = []
         for finding in all_findings:
-            ftype = finding.get('finding_type', 'unknown')
+            ftype = finding.get('type', 'unknown')  # Use 'type' not 'finding_type'
             by_type[ftype] = by_type.get(ftype, 0) + 1
             
             # Check for critical vulnerabilities
             if finding.get('severity') in ['critical', 'high'] or \
-               finding.get('finding_type') in ['vulnerability', 'injection', 'xss', 'sqli', 'rce']:
+               ftype in ['xss_potential', 'error_disclosure', 'vulnerability', 'injection', 'xss', 'sqli', 'rce']:
                 critical_vulns.append(finding)
         
         # Build complete HTML as single message
         analysis_html = f"<details open><summary>📊 <b>Findings Analysis ({len(all_findings)} total)</b></summary>"
         analysis_html += "<div style='padding-left: 1rem; margin-top: 0.5rem;'>"
         
-        # Show breakdown by type
+        # Show all findings grouped by type
         if by_type:
-            analysis_html += "<div><b>Breakdown by Type:</b></div>"
+            analysis_html += "<div><b>🗂 All Findings by Type:</b></div>"
             for ftype, count in sorted(by_type.items(), key=lambda x: x[1], reverse=True):
-                analysis_html += f"<div>• {ftype}: {count}</div>"
+                analysis_html += f"<details open style='margin-left: 1rem; margin-top: 0.5rem;'><summary><b>{ftype}</b> ({count} findings)</summary>"
+                analysis_html += "<div style='padding-left: 1rem; margin-top: 0.25rem;'>"
+                
+                # Get all findings of this type
+                type_findings = [f for f in all_findings if f.get('type') == ftype]
+                
+                for idx, finding in enumerate(type_findings, 1):
+                    content = finding.get('content', {})
+                    timestamp = finding.get('timestamp', 'N/A')[:19].replace('T', ' ')
+                    
+                    # Show relevant content based on type
+                    if ftype == "page_discovery":
+                        url = content.get('url', 'N/A')
+                        elem_count = len(content.get('interactive_elements', []))
+                        analysis_html += f"<div>{idx}. [{timestamp}] Found {elem_count} interactive elements at <code>{url}</code></div>"
+                    elif ftype == "tech_fingerprint":
+                        url = content.get('url', 'N/A')
+                        techs = content.get('technologies', {})
+                        tech_list = '<br/>'.join([f"&nbsp;&nbsp;&nbsp;- {k}: {v}" for k, v in techs.items()])
+                        analysis_html += f"<div>{idx}. [{timestamp}] <code>{url}</code><br/>{tech_list}</div>"
+                    elif ftype == "xss_potential":
+                        url = content.get('url', 'N/A')
+                        payload = content.get('payload', 'N/A')
+                        elem = content.get('element', 'N/A')
+                        analysis_html += f"<div>{idx}. [{timestamp}] 🔴 XSS at <code>{url}</code><br/>&nbsp;&nbsp;&nbsp;Element: {elem}, Payload: <code>{payload[:50]}</code></div>"
+                    elif ftype == "error_disclosure":
+                        url = content.get('url', 'N/A')
+                        error = content.get('error', 'N/A')[:100]
+                        payload = content.get('payload', 'N/A')
+                        analysis_html += f"<div>{idx}. [{timestamp}] ⚠️ Error at <code>{url}</code><br/>&nbsp;&nbsp;&nbsp;Payload: <code>{payload[:50]}</code><br/>&nbsp;&nbsp;&nbsp;Error: {error}...</div>"
+                    else:
+                        # Generic display
+                        content_str = str(content)[:150].replace('<', '&lt;').replace('>', '&gt;')
+                        analysis_html += f"<div>{idx}. [{timestamp}] {content_str}...</div>"
+                    
+                    if idx < len(type_findings):
+                        analysis_html += "<br/>"
+                
+                analysis_html += "</div></details>"
         
         # Show critical vulnerabilities
         if critical_vulns:
             analysis_html += f"<div style='margin-top: 0.5rem;'><b>⚠️ Critical/High Severity ({len(critical_vulns)}):</b></div>"
             for vuln in critical_vulns[:5]:  # Show first 5
                 content = vuln.get('content', {})
-                severity = vuln.get('severity', 'unknown')
-                ftype = vuln.get('finding_type', 'unknown')
+                severity = vuln.get('severity', 'high')
+                ftype = vuln.get('type', 'unknown')
                 url = content.get('url', 'N/A')
                 analysis_html += f"<div style='margin-left: 1rem;'>🔴 [{severity.upper()}] {ftype} at {url}</div>"
                 if 'description' in content:
                     analysis_html += f"<div style='margin-left: 2rem;'>→ {content['description']}</div>"
+                elif 'payload' in content:
+                    analysis_html += f"<div style='margin-left: 2rem;'>→ Payload: {content['payload'][:50]}</div>"
             if len(critical_vulns) > 5:
                 analysis_html += f"<div style='margin-left: 1rem;'>... and {len(critical_vulns) - 5} more</div>"
         else:
