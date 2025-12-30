@@ -1,0 +1,82 @@
+# Hive Bucket - Agent Data Storage
+hive_bucket/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+ENV/
+env/
+.venv
+
+# Poetry
+poetry.lock
+.poetry/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+test_*.py
+*.log
+
+# Secrets & Config
+*_secrets.json
+*.env
+.env.*
+!.env.example
+
+# Playwright
+.playwright/
+playwright-report/
+test-results/
+
+# OS
+Thumbs.db
+.DS_Store
+*.bak
+*.tmp
+
+# Screenshots from testing
+screenshots/
+*.png
+*.jpg
+*.jpeg
+
+# Mission state files (optional - uncomment if you want to track these)
+# !hive_bucket/state/mission.json
