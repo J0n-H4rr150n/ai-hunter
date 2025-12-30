@@ -140,6 +140,11 @@
                             onclick="switchSidebarTab('plan')">
                             📋 Plan
                         </button>
+                        <button id="tab-playbook"
+                            class="sidebar-tab text-sm font-semibold text-gray-400 hover:text-gray-300 px-2 py-1"
+                            onclick="switchSidebarTab('playbook')">
+                            🎯 Playbook
+                        </button>
                         <button id="tab-ideas"
                             class="sidebar-tab text-sm font-semibold text-gray-400 hover:text-gray-300 px-2 py-1"
                             onclick="switchSidebarTab('ideas')">
@@ -158,6 +163,15 @@
                     <div id="plan-tab-content" class="sidebar-tab-content">
                         <div id="plan-status-container" class="text-sm text-gray-400 text-center py-8">
                             No active plan
+                        </div>
+                    </div>
+
+                    <!-- Playbook Progress Tab Content -->
+                    <div id="playbook-tab-content" class="sidebar-tab-content hidden">
+                        <div id="playbook-progress-container">
+                            <div class="text-sm text-gray-400 text-center py-8">
+                                No playbook running
+                            </div>
                         </div>
                     </div>
 
@@ -234,6 +248,29 @@
                 </div>
 
                 <div>
+                    <label class="block text-sm font-medium mb-2">Playbook (Optional)</label>
+                    <select id="playbook-selector"
+                        class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        <option value="">🎯 Tactical Mode (Agent-driven)</option>
+                        <option value="ctf_idor_playbook">🏴 CTF IDOR Testing</option>
+                        <option value="test_simple_playbook">🧪 Simple Test Playbook</option>
+                    </select>
+                    <p class="text-xs text-gray-400 mt-1">
+                        Select a playbook for structured testing, or leave blank for free-form agent exploration
+                    </p>
+                </div>
+
+                <div id="playbook-info" class="hidden bg-gray-700 p-4 rounded-lg border border-gray-600">
+                    <h4 class="text-sm font-semibold text-blue-300 mb-2">📋 Playbook Details</h4>
+                    <p id="playbook-description" class="text-sm text-gray-300 mb-2"></p>
+                    <div class="flex space-x-4 text-xs text-gray-400">
+                        <span id="playbook-category"></span>
+                        <span id="playbook-difficulty"></span>
+                        <span id="playbook-duration"></span>
+                    </div>
+                </div>
+
+                <div>
                     <label class="block text-sm font-medium mb-2">Mission Instructions (Optional)</label>
                     <textarea id="instructions" rows="4"
                         class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -242,7 +279,7 @@
 
                 <button id="start-mission-btn"
                     class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition duration-200 transform hover:scale-105">
-                    Start Mission
+                    <span id="start-btn-text">Start Mission</span>
                 </button>
             </div>
         </div>

@@ -32,53 +32,77 @@ sequence:
     on_failure:
       action: "abort"  # Stop playbook if init fails
       
-  - runbook: "idor_runbook"
+  - runbook: "ctf_runbook"
     stage: 2
-    name: "IDOR Testing"
+    name: "CTF Challenge Solving"
     required: true
-    description: "Test for insecure direct object references based on recon findings"
-    hitl_checkpoint: true  # Wait for user approval before proceeding
+    description: "Intelligent CTF testing with flag detection and validation"
+    hitl_checkpoint: false  # Let agent work autonomously
     prerequisites:
       findings_required:
-        - "ID parameters discovered"
-        - "API endpoints with numeric IDs"
+        - "page_load_status"
       minimum_findings: 1
     on_complete:
-      action: "proceed"
+      action: "conditional"  # Decide based on results
+      if_flag_found: "proceed_to_report"
+      if_flag_not_found: "proceed_to_brainstorm"
     on_failure:
-      action: "skip"  # If no IDOR found, continue to brainstorm
+      action: "proceed"  # Still go to brainstorm even if runbook fails
       
   - runbook: "brainstorm_runbook"
     stage: 3
-    name: "Analysis & Next Steps"
+    name: "Creative Analysis & Next Steps"
     required: true
-    description: "Analyze all findings and determine next actions"
-    hitl_checkpoint: true
+    description: "Agent-guided creative problem solving when standard tests don't find flags"
+    hitl_checkpoint: true  # Human reviews brainstorm results
+    conditional: "only_if_flag_not_found"
     on_complete:
-      action: "complete"  # End playbook
+      action: "complete"  # End playbook after brainstorm
     on_failure:
       action: "complete"  # Always complete after brainstorm
+  
+  - runbook: "report_runbook"
+    stage: 4
+    name: "Final Reporting"
+    required: false
+    description: "Generate comprehensive report of findings"
+    hitl_checkpoint: false
+    conditional: "only_if_flag_found"
+    on_complete:
+      action: "complete"
+    on_failure:
+      action: "complete"
 
 # Conditional branching based on findings
 conditional_steps:
-  # If IDOR found with admin access, add privilege escalation
+  # If flag found in CTF runbook, skip brainstorm and go to report
   - condition:
       type: "finding_match"
-      pattern: "admin_access_gained|admin_endpoints"
-      source_runbook: "idor_runbook"
+      pattern: "flags_validated|flag_found"
+      source_runbook: "ctf_runbook"
     then:
-      insert_runbook: "privilege_escalation_runbook"
-      at_stage: 2.5  # Between stage 2 and 3
-      description: "Admin access discovered, attempting privilege escalation"
+      skip_runbook: "brainstorm_runbook"
+      execute_runbook: "report_runbook"
+      description: "Flag discovered, generating victory report"
   
-  # If no IDOR found, suggest auth bypass
+  # If no flag found, ensure brainstorm runs
   - condition:
       type: "finding_not_found"
-      pattern: "IDOR vulnerability"
-      source_runbook: "idor_runbook"
+      pattern: "flags_validated"
+      source_runbook: "ctf_runbook"
     then:
-      suggest_playbook: "auth_bypass_playbook"
-      reason: "No IDOR found, authentication bypass may be worth trying"
+      ensure_runbook: "brainstorm_runbook"
+      reason: "No flag found via standard testing, need creative analysis"
+  
+  # If IDOR found with potential flags, add idor_runbook
+  - condition:
+      type: "finding_match"
+      pattern: "idor_candidates|idor_patterns"
+      source_runbook: "ctf_runbook"
+    then:
+      insert_runbook: "idor_runbook"
+      at_stage: 2.5  # Between CTF and brainstorm
+      description: "Strong IDOR indicators found, running targeted IDOR tests"
 
 # Human-in-the-loop checkpoints
 hitl_checkpoints:

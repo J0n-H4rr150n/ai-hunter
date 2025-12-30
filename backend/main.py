@@ -28,6 +28,8 @@ from memory.finding_repository import FindingRepository
 from backend.database import Database
 from backend.redis_manager import RedisManager
 from core.state_manager import StateManager
+from core.playbook_manager import PlaybookManager
+from core.playbook_executor import PlaybookExecutor
 
 # Setup logging
 log_dir = Path(__file__).parent.parent / "hive_bucket" / "logs"
@@ -219,6 +221,11 @@ def transform_url_for_docker(url: str) -> str:
 # Pydantic models
 class MissionStart(BaseModel):
     target_url: str
+    instructions: Optional[str] = None
+
+class PlaybookMissionStart(BaseModel):
+    target_url: str
+    playbook_name: str
     instructions: Optional[str] = None
 
 class PlanApproval(BaseModel):
@@ -517,6 +524,216 @@ async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: st
             del active_missions[mission_id]
         if mission_id in plan_approval_queues:
             del plan_approval_queues[mission_id]
+
+@app.get("/api/playbooks")
+async def list_playbooks():
+    """List all available playbooks"""
+    try:
+        playbook_mgr = PlaybookManager()
+        playbooks = []
+        
+        for name, playbook in playbook_mgr.playbooks.items():
+            playbooks.append({
+                "name": name,
+                "metadata": playbook.get("metadata", {}),
+                "category": playbook.get("metadata", {}).get("category", "unknown")
+            })
+        
+        return playbooks
+    except Exception as e:
+        backend_logger.error(f"Failed to list playbooks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/playbooks/{playbook_name}")
+async def get_playbook(playbook_name: str):
+    """Get details of a specific playbook"""
+    try:
+        playbook_mgr = PlaybookManager()
+        playbook = playbook_mgr.get_playbook(playbook_name)
+        
+        if not playbook:
+            raise HTTPException(status_code=404, detail="Playbook not found")
+        
+        return playbook
+    except HTTPException:
+        raise
+    except Exception as e:
+        backend_logger.error(f"Failed to get playbook {playbook_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/missions/start-playbook")
+async def start_playbook_mission(mission: PlaybookMissionStart):
+    """Start a new playbook-based mission"""
+    backend_logger.info(f"Starting playbook mission: {mission.playbook_name} on {mission.target_url}")
+    
+    # Transform URL for Docker if needed
+    target_url = transform_url_for_docker(mission.target_url)
+    backend_logger.debug(f"Transformed URL: {target_url}")
+    
+    # Validate playbook exists
+    playbook_mgr = PlaybookManager()
+    playbook = playbook_mgr.get_playbook(mission.playbook_name)
+    if not playbook:
+        raise HTTPException(status_code=404, detail=f"Playbook '{mission.playbook_name}' not found")
+    
+    # Create mission in database
+    mission_id = await db.create_mission(
+        target_url=target_url,
+        instructions=f"Playbook: {mission.playbook_name}\n{mission.instructions or ''}"
+    )
+    
+    # Initialize components
+    tracker = AgentTracker(agent_id=f"mission_{mission_id}")
+    repo = FindingRepository()
+    quota = QuotaManager(agent_id=f"mission_{mission_id}")
+    state_mgr = StateManager()
+    
+    # Create tool approval queue for HITL
+    tool_approval_queue = asyncio.Queue()
+    tool_approval_queues[mission_id] = tool_approval_queue
+    
+    # Publish mission started event
+    await redis_mgr.publish_event("missions:all", {
+        "type": "mission_started",
+        "mission_id": mission_id,
+        "message": f"Starting playbook: {mission.playbook_name}",
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
+    # Publish playbook started event
+    await redis_mgr.publish_event("missions:all", {
+        "type": "playbook_started",
+        "mission_id": mission_id,
+        "playbook_name": mission.playbook_name,
+        "goal": playbook.get("metadata", {}).get("description", ""),
+        "total_stages": len(playbook.get("sequence", [])),
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
+    # Store in active missions
+    active_missions[mission_id] = {
+        "status": "running",
+        "playbook": mission.playbook_name,
+        "started_at": datetime.utcnow().isoformat()
+    }
+    
+    # Execute playbook in background
+    asyncio.create_task(execute_playbook_mission(
+        mission_id, mission.playbook_name, target_url, 
+        mission.instructions, tracker, repo, quota, state_mgr, tool_approval_queue
+    ))
+    
+    return {
+        "mission_id": mission_id,
+        "status": "started",
+        "playbook": mission.playbook_name
+    }
+
+async def execute_playbook_mission(
+    mission_id: int,
+    playbook_name: str,
+    target_url: str,
+    instructions: Optional[str],
+    tracker: AgentTracker,
+    repo: FindingRepository,
+    quota: QuotaManager,
+    state_mgr: StateManager,
+    tool_approval_queue: asyncio.Queue
+):
+    """Execute a playbook-based mission in the background"""
+    try:
+        backend_logger.info(f"[Mission {mission_id}] Executing playbook: {playbook_name}")
+        
+        # Create PlaybookExecutor
+        executor = PlaybookExecutor(
+            playbook_manager=PlaybookManager(),
+            state_manager=state_mgr,
+            tracker=tracker,
+            repo=repo,
+            quota=quota
+        )
+        
+        # Progress callback for UI updates
+        async def progress_callback(progress_data: dict):
+            """Publish playbook progress updates"""
+            await redis_mgr.publish_event("missions:all", {
+                "type": "playbook_progress",
+                "mission_id": mission_id,
+                "playbook_name": playbook_name,
+                **progress_data,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        
+        # Tool approval callback
+        main_loop = asyncio.get_event_loop()
+        
+        async def async_tool_approval(tool_name: str, tool_inputs: dict, context: dict) -> dict:
+            """Request tool approval from user"""
+            approval_id = f"tool_{mission_id}_{datetime.utcnow().timestamp()}"
+            
+            # Publish approval request
+            await redis_mgr.publish_event("missions:all", {
+                "type": "tool_approval_request",
+                "approval_id": approval_id,
+                "mission_id": mission_id,
+                "tool_name": tool_name,
+                "tool_inputs": tool_inputs,
+                "context": context,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+            # Wait for approval
+            approval_response = await tool_approval_queue.get()
+            return approval_response
+        
+        def sync_tool_approval(tool_name: str, tool_inputs: dict, context: dict) -> dict:
+            """Synchronous wrapper for tool approval"""
+            future = asyncio.run_coroutine_threadsafe(
+                async_tool_approval(tool_name, tool_inputs, context), 
+                main_loop
+            )
+            return future.result()
+        
+        # Configure HITL
+        executor.tool_approval_callback = sync_tool_approval
+        executor.hitl_enabled = True  # Can be configured per playbook
+        
+        # Execute playbook (synchronous, run in thread pool)
+        result = await asyncio.to_thread(
+            executor.execute_playbook,
+            playbook_name,
+            {
+                "target_url": target_url,
+                "instructions": instructions
+            },
+            progress_callback=progress_callback
+        )
+        
+        # Mission completed
+        await db.update_mission_status(mission_id, "completed")
+        await redis_mgr.publish_event("missions:all", {
+            "type": "playbook_completed",
+            "mission_id": mission_id,
+            "playbook_name": playbook_name,
+            "result": result,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+    except Exception as e:
+        backend_logger.error(f"[Mission {mission_id}] Playbook execution error: {e}", exc_info=True)
+        await db.update_mission_status(mission_id, "failed")
+        await redis_mgr.publish_event("missions:all", {
+            "type": "mission_failed",
+            "mission_id": mission_id,
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    finally:
+        # Clean up
+        if mission_id in active_missions:
+            del active_missions[mission_id]
+        if mission_id in tool_approval_queues:
+            del tool_approval_queues[mission_id]
 
 @app.post("/api/missions/{mission_id}/approve")
 async def approve_plan(mission_id: int, approval: PlanApproval):

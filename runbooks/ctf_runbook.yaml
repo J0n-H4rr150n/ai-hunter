@@ -1,3 +1,447 @@
-- ctf runbook
-- put this at the end of a playbook to indicate to the agent that if it didn't find a `FLAG` of some sort it needs to then brainstorm/rethink and propose next steps or questions.
+---
+metadata:
+  name: CTF Challenge Solver
+  version: 2.0
+  category: ctf
+  agent_mode: runbook
+  goal: Find and validate CTF flags using intelligent testing
+  description: |
+    Advanced CTF runbook that combines automated reconnaissance with
+    agent-guided intelligent testing. Includes flag detection, validation,
+    and conditional branching to brainstorm mode when stuck.
+  
+  prerequisites:
+    required: []
+    optional:
+      - tech_fingerprint_findings
+  
+  triggers:
+    - condition: mission_start
+      priority: high
+    - condition: flag_not_found_after_recon
+      priority: medium
+  
+  next_runbooks:
+    on_success:
+      - runbook: report_runbook
+        condition: flag_found
+    on_failure:
+      - runbook: brainstorm_runbook
+        condition: flag_not_found
+    on_stuck:
+      - runbook: brainstorm_runbook
+        condition: no_progress_10_minutes
 
+steps:
+  # ============================================================================
+  # PHASE 1: INTELLIGENT RECONNAISSANCE
+  # ============================================================================
+  
+  - id: 1
+    name: Navigate and Observe
+    action: navigate
+    tool: som_browser
+    agent_mode: tool_only
+    description: Navigate to target and capture initial state
+    url: "{{target_url}}"
+    depends_on: []
+    outputs:
+      - page_loaded
+      - initial_screenshot
+    findings_to_log:
+      - page_load_status
+      - http_status_code
+      - page_title
+
+  - id: 2
+    name: Intelligent Page Analysis
+    action: inspect_dom
+    tool: som_browser
+    agent_mode: agent_guided
+    description: |
+      Analyze the page with CTF mindset. Look for:
+      - Flags in obvious places (HTML comments, hidden divs, page source)
+      - Login forms or authentication mechanisms
+      - Interesting parameters (id, user, admin, etc.)
+      - API endpoints or data sources
+      - Client-side validation that can be bypassed
+      - Suspicious JavaScript files
+      - Hidden input fields or disabled buttons
+      - Debug or development artifacts
+    depends_on: [1]
+    outputs:
+      - dom_structure
+      - suspicious_elements
+      - potential_flags
+    findings_to_log:
+      - page_structure
+      - forms_found
+      - hidden_elements
+      - suspicious_patterns
+      - flags_in_dom
+
+  - id: 3
+    name: Search Source for Flags
+    action: view_source
+    tool: som_browser
+    agent_mode: agent_guided
+    description: |
+      Examine HTML source with flag-hunting focus:
+      - Look for FLAG{...}, flag{...}, CTF{...} patterns
+      - Check HTML comments for hints or flags
+      - Find hardcoded credentials or API keys
+      - Identify interesting JavaScript files
+      - Look for base64 encoded strings
+      - Find developer comments or TODOs
+      - Check for source maps or debug artifacts
+    depends_on: [1]
+    outputs:
+      - html_source
+      - flag_candidates
+      - interesting_strings
+    findings_to_log:
+      - flags_in_source
+      - sensitive_comments
+      - encoded_strings
+      - javascript_files
+
+  - id: 4
+    name: Monitor Network for Data Leaks
+    action: monitor_network
+    tool: som_browser
+    agent_mode: agent_guided
+    description: |
+      Monitor network traffic for flags and vulnerabilities:
+      - Check API responses for flags or sensitive data
+      - Look for sequential ID patterns (IDOR candidates)
+      - Find authentication tokens or session IDs
+      - Identify GraphQL or REST API endpoints
+      - Check for CORS misconfigurations
+      - Look for debug endpoints (/api/debug, /admin, etc.)
+      - Monitor for data leakage in responses
+    depends_on: [1]
+    outputs:
+      - network_requests
+      - api_endpoints
+      - idor_candidates
+      - auth_tokens
+    findings_to_log:
+      - network_traffic
+      - api_endpoints_found
+      - idor_patterns
+      - data_leaks
+
+  - id: 5
+    name: Extract and Analyze Parameters
+    action: extract_parameters
+    tool: som_browser
+    agent_mode: agent_guided
+    description: |
+      Extract all parameters for testing:
+      - URL parameters (query strings)
+      - Form inputs (including hidden)
+      - POST body parameters
+      - Cookies and session data
+      - Local/session storage keys
+      - Identify which parameters accept IDs or user data
+      - Prioritize parameters for IDOR testing
+    depends_on: [2]
+    outputs:
+      - all_parameters
+      - testable_parameters
+      - priority_targets
+    findings_to_log:
+      - parameters_extracted
+      - forms_analyzed
+      - injection_candidates
+
+  # ============================================================================
+  # PHASE 2: FLAG VALIDATION CHECKPOINT
+  # Check if we found flags in Phase 1 (easy wins)
+  # ============================================================================
+  
+  - id: 6
+    name: Validate Found Flags
+    action: regex_validation
+    tool: validator
+    agent_mode: tool_only
+    description: |
+      Validate any flag candidates found in Phase 1.
+      Check for patterns: FLAG{...}, flag{...}, CTF{...}, etc.
+      Report any valid flags immediately.
+    validation_rules:
+      - pattern: "FLAG\\{[A-Za-z0-9_-]+\\}"
+        description: "Standard FLAG{...} format"
+      - pattern: "flag\\{[A-Za-z0-9_-]+\\}"
+        description: "Lowercase flag{...} format"
+      - pattern: "CTF\\{[A-Za-z0-9_-]+\\}"
+        description: "CTF{...} format"
+      - pattern: "[A-Za-z0-9]{32,}"
+        description: "Hash-like string (potential flag)"
+    depends_on: [2, 3, 4]
+    outputs:
+      - validated_flags
+      - flag_locations
+    findings_to_log:
+      - flags_validated
+      - flag_format_confirmed
+    conditional:
+      if_found: "report_and_complete"
+      if_not_found: "continue_testing"
+
+  # ============================================================================
+  # PHASE 3: IDOR TESTING (Only if no flags found yet)
+  # ============================================================================
+  
+  - id: 7
+    name: Test for IDOR Vulnerabilities
+    action: test_access
+    tool: som_browser
+    agent_mode: agent_guided
+    description: |
+      Test for Insecure Direct Object References:
+      - Identify endpoints with ID parameters
+      - Test sequential ID enumeration (id=1, id=2, id=3...)
+      - Try accessing other users' data
+      - Test admin endpoints (/api/admin/users/1)
+      - Modify user_id, account_id, profile_id parameters
+      - Check if authorization is enforced
+      - Look for flags in unauthorized data access
+    depends_on: [5, 6]
+    precondition:
+      finding_not_exists: "flags_validated"
+    outputs:
+      - idor_results
+      - unauthorized_access
+      - flags_via_idor
+    findings_to_log:
+      - idor_vulnerabilities
+      - unauthorized_data_access
+      - flags_found_via_idor
+
+  - id: 8
+    name: IDOR Fuzzing Campaign
+    action: run_intruder
+    tool: fuzzer
+    agent_mode: tool_only
+    description: |
+      Automated IDOR fuzzing if manual testing found candidates.
+      Fuzz ID parameters across reasonable range.
+    value: "{{api_endpoint_with_id}}"
+    start_id: 1
+    end_id: 100
+    depends_on: [7]
+    precondition:
+      finding_exists: "idor_candidates"
+      finding_not_exists: "flags_validated"
+    outputs:
+      - fuzz_results
+      - interesting_responses
+    findings_to_log:
+      - fuzz_findings
+      - flags_from_fuzzing
+
+  # ============================================================================
+  # PHASE 4: AUTHENTICATION BYPASS ATTEMPTS
+  # ============================================================================
+  
+  - id: 9
+    name: Test Authentication Bypass
+    action: test_manipulation
+    tool: som_browser
+    agent_mode: agent_guided
+    description: |
+      Intelligent authentication bypass testing:
+      - Try SQL injection in login forms
+      - Test for NoSQL injection
+      - Try default credentials (admin/admin, admin/password)
+      - Look for password reset vulnerabilities
+      - Test session fixation
+      - Try JWT manipulation if tokens present
+      - Check for client-side validation bypass
+      - Look for flags after successful bypass
+    depends_on: [2, 5]
+    precondition:
+      finding_exists: "forms_found"
+      finding_not_exists: "flags_validated"
+    outputs:
+      - bypass_results
+      - auth_vulnerabilities
+      - flags_post_auth
+    findings_to_log:
+      - auth_bypass_success
+      - credentials_found
+      - flags_after_auth
+
+  # ============================================================================
+  # PHASE 5: COMPREHENSIVE SCAN (Last resort before brainstorm)
+  # ============================================================================
+  
+  - id: 10
+    name: Technology Stack Scan
+    action: comprehensive_scan
+    tool: tech_scanner
+    agent_mode: tool_only
+    description: |
+      Comprehensive technology fingerprinting for vulnerability hints
+    depends_on: [1]
+    precondition:
+      finding_not_exists: "flags_validated"
+    outputs:
+      - tech_stack
+      - version_info
+      - known_vulnerabilities
+    findings_to_log:
+      - technologies_detected
+      - versions_identified
+      - cve_matches
+
+  - id: 11
+    name: JavaScript Analysis
+    action: inspect_dom
+    tool: som_browser
+    agent_mode: agent_guided
+    description: |
+      Deep JavaScript analysis for client-side flags:
+      - Analyze all JavaScript files
+      - Look for obfuscated code
+      - Check for hardcoded secrets
+      - Find API endpoints in JS
+      - Look for eval() or dangerous functions
+      - Check for WebSocket endpoints
+      - Analyze build artifacts (webpack, source maps)
+    depends_on: [3]
+    precondition:
+      finding_exists: "javascript_files"
+      finding_not_exists: "flags_validated"
+    outputs:
+      - js_analysis
+      - api_endpoints_from_js
+      - secrets_in_js
+    findings_to_log:
+      - javascript_analyzed
+      - secrets_found
+      - flags_in_javascript
+
+  # ============================================================================
+  # PHASE 6: FINAL FLAG CHECK & DECISION POINT
+  # ============================================================================
+  
+  - id: 12
+    name: Final Flag Validation
+    action: compile_findings
+    tool: findings_aggregator
+    agent_mode: tool_only
+    description: |
+      Compile all findings and check for any flags discovered
+      across all testing phases.
+    depends_on: [6, 7, 8, 9, 11]
+    outputs:
+      - all_findings
+      - flag_summary
+      - success_status
+    findings_to_log:
+      - findings_compiled
+      - flags_summary
+
+  - id: 13
+    name: Report Flags if Found
+    action: report_finding
+    tool: reporter
+    agent_mode: tool_only
+    description: |
+      Report any discovered flags with evidence and location
+    depends_on: [12]
+    precondition:
+      finding_exists: "flags_validated"
+    value: "Flag(s) discovered via CTF runbook"
+    evidence: "{{validated_flags}}"
+    outputs:
+      - flag_reported
+    findings_to_log:
+      - flag_report_submitted
+
+  # ============================================================================
+  # PHASE 7: CONDITIONAL BRANCH - BRAINSTORM IF NO FLAGS
+  # ============================================================================
+  
+  - id: 14
+    name: Trigger Brainstorm Mode
+    action: conditional_check
+    tool: flow_controller
+    agent_mode: tool_only
+    description: |
+      If no flags found after all testing phases, trigger brainstorm
+      runbook for creative problem solving and next steps.
+    condition: "flags_not_found"
+    depends_on: [12]
+    precondition:
+      finding_not_exists: "flags_validated"
+    outputs:
+      - brainstorm_triggered
+    findings_to_log:
+      - brainstorm_mode_activated
+      - reason_for_brainstorm
+    next_runbook: brainstorm_runbook
+
+# Conditional flow control
+conditional_flow:
+  # Success path: Flag found
+  - condition:
+      type: finding_exists
+      pattern: "flags_validated"
+    then:
+      action: skip_to_step
+      step_id: 13
+      reason: "Flag found, skip remaining tests"
+  
+  # Stuck path: No progress after Phase 3
+  - condition:
+      type: no_new_findings
+      after_step: 8
+      threshold: 5
+    then:
+      action: skip_to_step
+      step_id: 14
+      reason: "No progress, moving to brainstorm"
+  
+  # IDOR path: Found IDOR candidates
+  - condition:
+      type: finding_exists
+      pattern: "idor_candidates"
+    then:
+      action: ensure_step_runs
+      step_id: 8
+      reason: "IDOR candidates found, must fuzz"
+
+# Success criteria
+success_criteria:
+  - type: finding_exists
+    pattern: "flags_validated"
+    weight: 100
+    description: "At least one valid flag found"
+  
+  - type: finding_exists
+    pattern: "idor_vulnerabilities"
+    weight: 50
+    description: "IDOR vulnerability demonstrated"
+  
+  - type: finding_exists
+    pattern: "auth_bypass_success"
+    weight: 50
+    description: "Authentication bypass achieved"
+
+# Failure criteria (triggers brainstorm)
+failure_criteria:
+  - type: finding_not_exists
+    pattern: "flags_validated"
+    after_step: 12
+    description: "No flags found after all testing phases"
+  
+  - type: timeout
+    duration_minutes: 30
+    description: "Testing exceeded 30 minutes without flag"
+  
+  - type: stuck
+    no_new_findings_count: 5
+    description: "No new findings in last 5 steps"

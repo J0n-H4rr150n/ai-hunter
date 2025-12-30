@@ -1,0 +1,165 @@
+---
+metadata:
+  name: Agent-Guided Reconnaissance
+  version: 2.0
+  category: reconnaissance
+  agent_mode: runbook  # Runbook provides structure, agent provides intelligence
+  goal: Perform intelligent reconnaissance with agent adaptation
+  description: |
+    This runbook combines declarative steps with agent intelligence.
+    The agent understands each step's objective and adapts its actions
+    based on what it observes, rather than blindly following commands.
+  
+  prerequisites:
+    required: []
+    optional: []
+  
+  triggers:
+    - condition: mission_start
+      priority: high
+
+steps:
+  # PHASE 1: Initial Navigation (Tool-only)
+  - id: 1
+    name: Navigate to Target
+    action: navigate
+    tool: som_browser
+    agent_mode: tool_only  # Pure tool execution
+    description: Navigate to the target URL
+    url: "{{target_url}}"
+    depends_on: []
+    outputs:
+      - nav_response
+    findings_to_log:
+      - page_load_status
+      - http_status_code
+
+  # PHASE 2: Visual Analysis (Agent-guided)
+  - id: 2
+    name: Analyze Page Structure
+    action: inspect_dom
+    tool: som_browser
+    agent_mode: agent_guided  # Agent decides HOW to analyze
+    description: |
+      Analyze the page structure intelligently. The agent should:
+      - Identify key sections (navigation, content, forms)
+      - Look for interesting elements (hidden fields, API endpoints)
+      - Spot potential security issues
+      - Prioritize high-value targets
+    depends_on: [1]
+    outputs:
+      - page_structure
+      - interesting_elements
+    findings_to_log:
+      - page_sections
+      - forms_found
+      - api_endpoints
+      - hidden_elements
+
+  # PHASE 3: Technology Detection (Tool-only)
+  - id: 3
+    name: Fingerprint Technologies
+    action: tech_scan
+    tool: tech_scanner
+    agent_mode: tool_only
+    description: Detect technologies used by the application
+    depends_on: [1]
+    outputs:
+      - tech_stack
+    findings_to_log:
+      - detected_technologies
+
+  # PHASE 4: Intelligent Form Discovery (Agent-guided)
+  - id: 4
+    name: Discover and Analyze Forms
+    action: extract_parameters
+    tool: som_browser
+    agent_mode: agent_guided
+    description: |
+      Intelligently discover and analyze forms. The agent should:
+      - Find all forms on the page
+      - Analyze input types and validation
+      - Identify potential injection points
+      - Assess authentication requirements
+      - Look for CSRF tokens or security measures
+    depends_on: [2]
+    outputs:
+      - form_analysis
+      - injection_candidates
+    findings_to_log:
+      - forms_discovered
+      - input_fields
+      - potential_vulnerabilities
+
+  # PHASE 5: Network Traffic Analysis (Agent-guided)
+  - id: 5
+    name: Monitor Network Activity
+    action: monitor_network
+    tool: som_browser
+    agent_mode: agent_guided
+    description: |
+      Monitor and analyze network traffic intelligently. The agent should:
+      - Identify API endpoints being called
+      - Look for sensitive data in requests/responses
+      - Check for authentication tokens
+      - Spot potential IDOR patterns (sequential IDs)
+      - Analyze headers for security issues
+    depends_on: [1]
+    outputs:
+      - api_endpoints
+      - auth_tokens
+      - idor_candidates
+    findings_to_log:
+      - network_requests
+      - api_findings
+      - security_headers
+
+  # PHASE 6: Source Code Analysis (Agent-guided)
+  - id: 6
+    name: Analyze Source Code
+    action: view_source
+    tool: som_browser
+    agent_mode: agent_guided
+    description: |
+      Analyze HTML source code intelligently. The agent should:
+      - Look for comments with sensitive information
+      - Find hidden fields or disabled elements
+      - Identify JavaScript files to analyze
+      - Spot hardcoded credentials or API keys
+      - Look for version information
+      - Find development/debug artifacts
+    depends_on: [1]
+    outputs:
+      - source_findings
+      - javascript_files
+    findings_to_log:
+      - sensitive_comments
+      - hidden_fields
+      - potential_secrets
+
+  # PHASE 7: Compile Intelligence (Tool-only)
+  - id: 7
+    name: Compile Reconnaissance Findings
+    action: compile_findings
+    tool: findings_aggregator
+    agent_mode: tool_only
+    description: Compile all reconnaissance findings for analysis
+    depends_on: [2, 3, 4, 5, 6]
+    outputs:
+      - compiled_intel
+    findings_to_log:
+      - reconnaissance_summary
+
+  # PHASE 8: Generate Reconnaissance Report (Tool-only)
+  - id: 8
+    name: Generate Reconnaissance Report
+    action: generate_report
+    tool: report_generator
+    agent_mode: tool_only
+    description: Generate detailed reconnaissance report
+    report_type: technical
+    depends_on: [7]
+    outputs:
+      - recon_report
+    findings_to_log:
+      - report_generated

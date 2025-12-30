@@ -8,6 +8,7 @@ export let state = {
     currentMissionId: null,
     currentPlan: null,
     currentPlanStatus: null, // 'approved', 'edited', 'rejected'
+    currentPlaybook: null, // Current playbook name
     eventSource: null,
     sidebarCollapsed: false,
     userHasScrolled: false,

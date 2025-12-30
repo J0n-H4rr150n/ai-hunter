@@ -164,6 +164,54 @@ export function connectToSSE() {
             timestamp: data.timestamp || new Date().toISOString()
         });
     });
+
+    // Playbook progress updates
+    state.eventSource.addEventListener('playbook_progress', (event) => {
+        const data = JSON.parse(event.data);
+        console.log('📋 Playbook progress:', data);
+        if (window.updatePlaybookProgress) {
+            window.updatePlaybookProgress(data);
+        }
+        
+        // Also add to feed for key milestones
+        if (data.runbook_completed) {
+            addToFeed({
+                message: `✅ Completed runbook: ${data.runbook_completed}`,
+                timestamp: data.timestamp || new Date().toISOString()
+            });
+        } else if (data.runbook_started) {
+            addToFeed({
+                message: `🔄 Started runbook: ${data.runbook_started}`,
+                timestamp: data.timestamp || new Date().toISOString()
+            });
+        }
+    });
+
+    // Playbook started
+    state.eventSource.addEventListener('playbook_started', (event) => {
+        const data = JSON.parse(event.data);
+        state.currentPlaybook = data.playbook_name;
+        addToFeed({
+            message: `🎯 Started playbook: ${data.playbook_name}`,
+            timestamp: data.timestamp || new Date().toISOString()
+        });
+        if (window.updatePlaybookProgress) {
+            window.updatePlaybookProgress(data);
+        }
+    });
+
+    // Playbook completed
+    state.eventSource.addEventListener('playbook_completed', (event) => {
+        const data = JSON.parse(event.data);
+        state.currentPlaybook = null;
+        addToFeed({
+            message: `🏁 Completed playbook: ${data.playbook_name}`,
+            timestamp: data.timestamp || new Date().toISOString()
+        });
+        if (window.updatePlaybookProgress) {
+            window.updatePlaybookProgress(null); // Clear progress
+        }
+    });
 }
 
 function updateStatus(status, text) {

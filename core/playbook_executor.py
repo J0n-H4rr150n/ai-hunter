@@ -90,6 +90,7 @@ class PlaybookExecutor:
         # Execution context
         self.context: Optional[PlaybookExecutorContext] = None
         self.current_runbook_executor: Optional[RunbookExecutor] = None
+        self.progress_callback: Optional[callable] = None
         
     def _log(self, message: str, screenshot: dict = None):
         """Log to UI and console"""
@@ -98,19 +99,33 @@ class PlaybookExecutor:
         else:
             print(message)
     
-    async def execute_playbook(self, playbook_name: str, goal: str, 
-                              target_url: str, mission_id: int,
+    async def _publish_progress(self, progress_data: dict):
+        """Publish progress updates via callback"""
+        if self.progress_callback:
+            try:
+                if asyncio.iscoroutinefunction(self.progress_callback):
+                    await self.progress_callback(progress_data)
+                else:
+                    self.progress_callback(progress_data)
+            except Exception as e:
+                print(f"[Playbook] Error publishing progress: {e}")
+    async def execute_playbook(self, playbook_name: str, goal: str = None, 
+                              target_url: str = None, mission_id: int = None,
                               instructions: str = None,
+                              context_dict: Dict[str, Any] = None,
+                              progress_callback: callable = None,
                               skip_validation: bool = False) -> Dict[str, Any]:
         """
         Main entry point for playbook execution.
         
         Args:
             playbook_name: Name of playbook YAML file (without .yaml)
-            goal: Mission objective
-            target_url: Target URL to test
-            mission_id: Database mission ID
-            instructions: Optional user instructions
+            goal: Mission objective (can be in context_dict)
+            target_url: Target URL to test (can be in context_dict)
+            mission_id: Database mission ID (optional)
+            instructions: Optional user instructions (can be in context_dict)
+            context_dict: Alternative way to pass all context as dict
+            progress_callback: Optional async callback for progress updates
             skip_validation: Skip pre-flight validation (NOT RECOMMENDED)
         
         Returns:
@@ -119,6 +134,20 @@ class PlaybookExecutor:
         Raises:
             PlaybookExecutionError: If validation fails or critical error occurs
         """
+        
+        # Support both parameter styles
+        if context_dict:
+            target_url = context_dict.get("target_url", target_url)
+            instructions = context_dict.get("instructions", instructions)
+            goal = context_dict.get("goal", goal)
+            mission_id = context_dict.get("mission_id", mission_id)
+        
+        # Default values
+        goal = goal or "Execute playbook"
+        mission_id = mission_id or 0
+        
+        # Store progress callback
+        self.progress_callback = progress_callback
         
         # Initialize context
         self.context = PlaybookExecutorContext(mission_id, goal, target_url, instructions)
@@ -215,6 +244,15 @@ class PlaybookExecutor:
                     
                     self._log(f"[Playbook] ✅ Stage {stage} complete: {runbook_name}")
                     
+                    # Publish runbook completed
+                    await self._publish_progress({
+                        "runbook_completed": runbook_name,
+                        "completed_runbooks": self.context.completed_runbooks,
+                        "current_stage": stage + 1,
+                        "total_stages": len(self.context.playbook.get('sequence', [])),
+                        "findings_count": sum(len(f) for f in self.context.all_findings.values() if isinstance(f, list))
+                    })
+                    
                 except RunbookExecutionError as e:
                     self._log(f"[Playbook] ❌ Runbook failed: {runbook_name} - {e}")
                     self.context.failed_runbooks.append({
@@ -273,6 +311,14 @@ class PlaybookExecutor:
         
         self._log(f"[Runbook] 🔧 Loading runbook: {runbook_name}")
         
+        # Publish runbook started
+        await self._publish_progress({
+            "runbook_started": runbook_name,
+            "current_runbook": runbook_name,
+            "current_stage": stage,
+            "total_stages": len(self.context.playbook.get('sequence', [])) if self.context.playbook else 0
+        })
+        
         try:
             # Load runbook
             runbook = self.runbook_parser.load_runbook(runbook_name)
@@ -296,6 +342,19 @@ class PlaybookExecutor:
                 step_name = step['name']
                 
                 self._log(f"[Runbook] 📍 Step {i}/{len(ordered_steps)}: {step_name}")
+                
+                # Publish step progress
+                await self._publish_progress({
+                    "current_runbook": runbook_name,
+                    "current_step": {
+                        "id": step_id,
+                        "name": step_name,
+                        "number": i,
+                        "total": len(ordered_steps)
+                    },
+                    "current_stage": stage,
+                    "total_stages": len(self.context.playbook.get('sequence', [])) if self.context.playbook else 0
+                })
                 
                 # Check dependencies
                 depends_on = step.get('depends_on', [])
@@ -366,6 +425,26 @@ class PlaybookExecutor:
             'step_id': step['id']
         }
         
+        # Check if agent should be involved in this step
+        agent_mode = step.get('agent_mode', 'tool_only')  # 'tool_only', 'agent_guided', 'agent_free'
+        
+        if agent_mode == 'agent_guided' and hasattr(self.loop, 'agent') and self.loop.agent:
+            # Let agent plan the step execution with runbook guidance
+            findings = await self._execute_step_with_agent_guidance(step, runbook, execution_context)
+        elif agent_mode == 'agent_free' and hasattr(self.loop, 'agent') and self.loop.agent:
+            # Let agent execute freely (minimal runbook guidance)
+            findings = await self._execute_step_with_agent_free(step, runbook, execution_context)
+        else:
+            # Pure tool execution (default)
+            findings = await self._execute_step_with_tools(step, execution_context)
+        
+        return findings
+    
+    async def _execute_step_with_tools(self, step: dict, execution_context: dict) -> Dict[str, Any]:
+        """Execute step using ToolMapper only (no agent involvement)"""
+        
+        action = step['action']
+        
         try:
             # Execute action using ToolMapper
             findings = self.tool_mapper.execute_action(action, step, execution_context)
@@ -390,6 +469,92 @@ class PlaybookExecutor:
         except Exception as e:
             self._log(f"[Step] ❌ Unexpected error: {e}")
             raise
+    
+    async def _execute_step_with_agent_guidance(self, step: dict, runbook: dict, 
+                                               execution_context: dict) -> Dict[str, Any]:
+        """
+        Execute step with agent intelligence + runbook guidance.
+        
+        Agent understands the runbook step objective and uses its intelligence
+        to accomplish it, adapting to what it observes on the page.
+        """
+        
+        action = step['action']
+        self._log(f"[Step] 🤖 Agent-guided execution for: {step['name']}")
+        
+        # Get current state for agent
+        if not self.loop.browser:
+            self._log(f"[Step] ⚠️  No browser available for agent guidance, falling back to tools")
+            return await self._execute_step_with_tools(step, execution_context)
+        
+        try:
+            # Get page state
+            screenshot_bytes = await self.loop.browser.capture_screenshot()
+            element_list = await self.loop.browser.get_interactive_elements()
+            
+            # Optional: get text context based on step
+            text_context = None
+            if action in ['view_source', 'inspect_dom']:
+                text_context = await self.loop.browser.get_html_source()
+            elif action in ['monitor_network', 'check_network']:
+                text_context = await self.loop.browser.get_network_logs()
+            
+            # Build step context
+            step_context = {
+                'goal': execution_context['goal'],
+                'findings': list(self.context.all_findings.values()),
+                'history': []  # Could be populated from agent's action history
+            }
+            
+            # Ask agent to plan this specific step
+            agent_decision = self.loop.agent.plan_next_step_from_runbook(
+                runbook_step=step,
+                step_context=step_context,
+                screenshot_bytes=screenshot_bytes,
+                element_list=element_list,
+                text_context=text_context
+            )
+            
+            self._log(f"[Step] 💭 Agent thought: {agent_decision.get('thought', 'N/A')}")
+            self._log(f"[Step] ⚡ Agent action: {agent_decision.get('action', 'N/A')}")
+            
+            # Execute the agent's decision
+            # This would integrate with the autonomous loop's action execution
+            # For now, we'll convert agent action to findings
+            
+            findings = {
+                'agent_decision': agent_decision,
+                'step_completed': True,
+                'agent_guided': True,
+                'runbook_step': step['id']
+            }
+            
+            return findings
+            
+        except Exception as e:
+            self._log(f"[Step] ⚠️  Agent guidance failed: {e}, falling back to tools")
+            return await self._execute_step_with_tools(step, execution_context)
+    
+    async def _execute_step_with_agent_free(self, step: dict, runbook: dict,
+                                            execution_context: dict) -> Dict[str, Any]:
+        """
+        Execute step with agent in free-form mode.
+        
+        Agent receives minimal guidance and operates autonomously to achieve
+        the step's high-level objective.
+        """
+        
+        self._log(f"[Step] 🤖 Agent free-form execution for: {step['name']}")
+        
+        # This would integrate with the autonomous loop's main execution
+        # The agent would execute autonomously until the step objective is met
+        
+        # For now, return placeholder
+        return {
+            'agent_free_mode': True,
+            'step_objective': step['description'],
+            'note': 'Agent free-form execution not yet fully integrated'
+        }
     
     async def _request_hitl_checkpoint_approval(self, runbook_info: dict) -> Dict[str, Any]:
         """

@@ -1,18 +1,30 @@
 ---
 # Brainstorm & Analysis Runbook
 # Final step in playbooks - analyze all findings and recommend next actions
+# Especially critical when CTF runbook fails to find flags
 
 metadata:
   name: "Brainstorm & Analysis"
-  version: "1.0"
+  version: "2.0"
   description: "Analyze all findings from previous runbooks and generate strategic recommendations"
   author: "AI Hunter"
+  agent_mode: runbook
+  category: analysis
+  goal: Generate creative next steps when standard testing doesn't find objectives
   
   # This runbook is typically used at the end of a playbook
   # Can be used after any runbook sequence
   prerequisites:
     required: []  # Flexible - can run after any runbook(s)
-    optional: ["init_runbook"]  # Works best with some prior context
+    optional: ["init_runbook", "ctf_runbook"]
+  
+  triggers:
+    - condition: ctf_flag_not_found
+      priority: high
+    - condition: testing_stuck
+      priority: high
+    - condition: playbook_completion
+      priority: medium
 
 # Analysis and planning workflow
 steps:
@@ -22,6 +34,7 @@ steps:
     description: "Collect and organize all findings from previous runbooks in this playbook"
     depends_on: []
     tool: "findings_aggregator"
+    agent_mode: tool_only
     aggregation_strategy:
       - "Group by runbook source"
       - "Categorize by finding type (vuln, config, info disclosure, etc)"
@@ -35,10 +48,11 @@ steps:
   
   - id: "analyze_attack_surface"
     name: "Analyze Attack Surface"
-    action: "assess_surface"
+    action: "review_findings"
     description: "Evaluate the overall attack surface based on findings"
     depends_on: ["aggregate_all_findings"]
-    tool: "attack_surface_analyzer"
+    tool: "findings_aggregator"
+    agent_mode: tool_only
     analysis_criteria:
       - "Entry points discovered (forms, APIs, file uploads, etc)"
       - "Authentication mechanisms identified"
@@ -52,12 +66,50 @@ steps:
       - "Unexplored areas"
       - "Quick wins vs complex attacks"
   
+  - id: "agent_creative_analysis"
+    name: "Agent Creative Problem Solving"
+    action: "inspect_dom"
+    tool: "som_browser"
+    agent_mode: agent_guided
+    description: |
+      Let the agent analyze ALL findings with creative intelligence.
+      
+      Agent should think laterally about:
+      - Unusual patterns or anomalies in findings
+      - Connections between seemingly unrelated findings
+      - Attack vectors not yet tried
+      - Technologies that might have known vulnerabilities
+      - Common CTF tricks (steganography, encoding, rabbit holes)
+      - Alternative interpretations of discovered data
+      - Out-of-the-box exploitation ideas
+      
+      For CTF challenges specifically, consider:
+      - Is there a hidden message or pattern?
+      - Are we missing an obvious flag location?
+      - Is there misdirection or red herrings?
+      - Should we try different encoding/decoding?
+      - Are there Easter eggs in the UI/source?
+      - Is timing or race conditions relevant?
+      
+      Agent should propose 3-5 specific next actions ranked by likelihood of success.
+    depends_on: ["analyze_attack_surface"]
+    outputs:
+      - creative_insights
+      - alternative_approaches
+      - ranked_next_actions
+    findings_to_log:
+      - agent_creative_analysis
+      - unconventional_approaches
+      - ranked_recommendations
+  
   - id: "identify_vulnerability_chains"
     name: "Identify Vulnerability Chains"
-    action: "chain_analysis"
+    action: "pattern_search"
     description: "Look for combinations of findings that create exploitation chains"
-    depends_on: ["analyze_attack_surface"]
-    tool: "chain_analyzer"
+    depends_on: ["agent_creative_analysis"]
+    tool: "findings_aggregator"
+    tool: "findings_aggregator"
+    agent_mode: tool_only
     chain_patterns:
       - "IDOR + Info disclosure = Account takeover"
       - "XSS + Session fixation = Session hijacking"
@@ -72,10 +124,12 @@ steps:
   
   - id: "assess_risk_and_impact"
     name: "Assess Risk and Impact"
-    action: "risk_assessment"
+    action: "review_findings"
     description: "Evaluate business risk and potential impact of discovered issues"
     depends_on: ["identify_vulnerability_chains"]
-    tool: "risk_calculator"
+    tool: "findings_aggregator"
+    tool: "findings_aggregator"
+    agent_mode: tool_only
     risk_factors:
       - "Data sensitivity (PII, financial, credentials)"
       - "User base affected (single user, all users, admin)"
@@ -90,10 +144,10 @@ steps:
   
   - id: "generate_testing_recommendations"
     name: "Generate Testing Recommendations"
-    action: "recommend_tests"
-    description: "Suggest additional tests and unexplored attack vectors"
-    depends_on: ["assess_risk_and_impact"]
-    tool: "test_recommender"
+    action: "compile_findings"
+    description: "Suggest additional tests and unexplored attack vectors based on agent analysis"
+    dependsfindings_aggregator"
+    agent_mode: tool_only
     recommendation_logic:
       - "IF APIs found AND not tested → Suggest API fuzzing"
       - "IF file upload AND not tested → Suggest file upload bypass"
@@ -101,6 +155,7 @@ steps:
       - "IF multiple roles detected → Suggest privilege escalation"
       - "IF session management observed → Suggest session attacks"
       - "IF custom crypto detected → Suggest crypto analysis"
+      - "Use agent's creative insights for unconventional approaches"
     findings_to_log:
       - "Recommended runbooks to execute"
       - "Untested attack vectors"
@@ -109,10 +164,11 @@ steps:
   
   - id: "create_exploitation_plan"
     name: "Create Exploitation Plan"
-    action: "plan_exploitation"
-    description: "If authorized, create step-by-step exploitation plan"
-    depends_on: ["identify_vulnerability_chains", "assess_risk_and_impact"]
-    tool: "exploit_planner"
+    action: "compile_findings"
+    description: "If authorized, create step-by-step exploitation plan integrating agent insights"
+    depends_on: ["identify_vulnerability_chains", "assess_risk_and_impact", "agent_creative_analysis"]
+    tool: "findings_aggregator"
+    agent_mode: tool_only
     planning_stages:
       - "Initial access vector"
       - "Privilege escalation path"
@@ -128,10 +184,10 @@ steps:
   
   - id: "draft_remediation_guidance"
     name: "Draft Remediation Guidance"
-    action: "generate_fixes"
+    action: "review_findings"
     description: "Provide preliminary remediation recommendations"
-    depends_on: ["assess_risk_and_impact"]
-    tool: "remediation_advisor"
+    dependsfindings_aggregator"
+    agent_mode: tool_only
     remediation_categories:
       - "Quick fixes (configuration changes)"
       - "Code changes required"
@@ -146,12 +202,20 @@ steps:
   
   - id: "generate_summary_report"
     name: "Generate Summary Report"
-    action: "compile_report"
-    description: "Create human-readable summary of all analysis"
+    action: "generate_report"
+    description: "Create human-readable summary of all analysis including agent insights"
     depends_on: [
       "aggregate_all_findings",
       "analyze_attack_surface",
+      "agent_creative_analysis",
       "identify_vulnerability_chains",
+      "assess_risk_and_impact",
+      "generate_testing_recommendations",
+      "draft_remediation_guidance"
+    ]
+    tool: "report_generator"
+    agent_mode: tool_only
+    report_type: "technicalty_chains",
       "assess_risk_and_impact",
       "generate_testing_recommendations",
       "draft_remediation_guidance"

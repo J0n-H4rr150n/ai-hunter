@@ -12,6 +12,7 @@ class VertexAgent:
         # These are injected by the Orchestrator at runtime.
         self.memory = None 
         self.current_mission_plan = "No specific plan loaded. Explore safely."
+        self.runbook_context = None  # Injected when executing via runbooks
         
         self.model = GenerativeModel(
             "gemini-2.5-pro",
@@ -79,6 +80,40 @@ class VertexAgent:
         Injects the Tactical Planner's output into the system context.
         """
         self.current_mission_plan = plan_text
+    
+    def set_runbook_context(self, runbook_name: str, runbook_metadata: dict, 
+                           current_step: dict, completed_steps: list,
+                           findings_so_far: list):
+        """
+        Inject runbook execution context for agent awareness.
+        
+        When executing via runbooks, the agent should understand:
+        - What runbook is being followed
+        - What step we're currently on
+        - What has been completed
+        - What findings have been made
+        - What the runbook's goal is
+        
+        This allows the agent to make intelligent decisions aligned with
+        the runbook's strategy while still being autonomous.
+        """
+        self.runbook_context = {
+            'runbook_name': runbook_name,
+            'runbook_goal': runbook_metadata.get('goal', 'Execute runbook steps'),
+            'runbook_category': runbook_metadata.get('category', 'general'),
+            'current_step': current_step,
+            'current_step_id': current_step.get('id'),
+            'current_step_name': current_step.get('name', ''),
+            'current_step_goal': current_step.get('description', ''),
+            'completed_steps': [s.get('id') for s in completed_steps],
+            'completed_step_names': [s.get('name') for s in completed_steps],
+            'findings_count': len(findings_so_far),
+            'recent_findings': findings_so_far[-5:] if findings_so_far else []
+        }
+    
+    def clear_runbook_context(self):
+        """Clear runbook context when switching to free-form mode"""
+        self.runbook_context = None
 
     def plan_next_step(self, goal: str, history: list, screenshot_bytes: bytes, element_list: list, text_context: str = None) -> dict:
         """
@@ -109,8 +144,29 @@ class VertexAgent:
         ])
         
         prompt_parts = [
-            f"CURRENT GOAL: {goal}",
-            f"--- MISSION PLAN (EXECUTE THIS) ---\n{self.current_mission_plan}\n",
+            f"CURRENT GOAL: {goal}",        ]
+        
+        # Inject runbook context if we're in runbook mode
+        if self.runbook_context:
+            runbook_info = f"""--- RUNBOOK EXECUTION MODE ---
+Runbook: {self.runbook_context['runbook_name']}
+Runbook Goal: {self.runbook_context['runbook_goal']}
+Category: {self.runbook_context['runbook_category']}
+
+CURRENT STEP #{self.runbook_context['current_step_id']}: {self.runbook_context['current_step_name']}
+Step Objective: {self.runbook_context['current_step_goal']}
+
+Completed Steps: {', '.join(self.runbook_context['completed_step_names']) if self.runbook_context['completed_step_names'] else 'None yet'}
+
+Findings So Far: {self.runbook_context['findings_count']} findings collected
+Recent Findings: {json.dumps(self.runbook_context['recent_findings'][-3:]) if self.runbook_context['recent_findings'] else 'None yet'}
+
+IMPORTANT: Your actions should align with the current step's objective while using your intelligence to adapt to what you observe.
+--- END RUNBOOK CONTEXT ---
+"""
+            prompt_parts.append(runbook_info)
+        
+        prompt_parts.extend([            f"--- MISSION PLAN (EXECUTE THIS) ---\n{self.current_mission_plan}\n",
             
             # Inject RAG context if it exists
             (rag_context if rag_context else ""),
@@ -141,4 +197,136 @@ class VertexAgent:
                 "thought": "Error generating response. I will wait.",
                 "action": "wait",
                 "value": str(e)
+            }
+    
+    def plan_next_step_from_runbook(self, runbook_step: dict, 
+                                    step_context: dict,
+                                    screenshot_bytes: bytes, 
+                                    element_list: list,
+                                    text_context: str = None) -> dict:
+        """
+        Specialized planning for runbook-guided execution.
+        
+        This method helps the agent understand and execute a specific runbook step
+        while maintaining autonomy to adapt based on what it observes.
+        
+        Args:
+            runbook_step: The current runbook step dict with action, description, etc.
+            step_context: Additional context about findings, history, etc.
+            screenshot_bytes: Current screenshot
+            element_list: Interactive elements on page
+            text_context: Optional text context (source, network logs, etc.)
+        
+        Returns:
+            dict: Agent decision in standard action format
+        """
+        
+        # Extract step information
+        step_id = runbook_step.get('id')
+        step_name = runbook_step.get('name', 'Unnamed Step')
+        step_action = runbook_step.get('action', 'unknown')
+        step_description = runbook_step.get('description', '')
+        step_tool = runbook_step.get('tool', 'agent')
+        
+        # Get context
+        findings_so_far = step_context.get('findings', [])
+        history = step_context.get('history', [])
+        goal = step_context.get('goal', 'Execute runbook step')
+        
+        # Memory RAG (if available)
+        rag_context = ""
+        if self.memory and history:
+            last_entry = history[-1] if history else {}
+            query = f"{step_description} {step_action}"
+            rag_context = self.memory.retrieve_relevant_lessons(query, step_action)
+        
+        # Data sanitization
+        if text_context:
+            text_context = truncate_context(text_context)
+        
+        # Compact elements
+        element_context = "\n".join([
+            f"ID {e['id']}: <{e['tagName']}> {e.get('text', '')[:50]}" 
+            for e in element_list
+        ])
+        
+        # Build runbook-specific prompt
+        prompt_parts = [
+            f"=== RUNBOOK-GUIDED EXECUTION ===",
+            f"Overall Goal: {goal}",
+            f"",
+            f"CURRENT RUNBOOK STEP:",
+            f"  Step #{step_id}: {step_name}",
+            f"  Objective: {step_description}",
+            f"  Suggested Action: {step_action}",
+            f"  Tool Hint: {step_tool}",
+            f"",
+            f"FINDINGS SO FAR: {len(findings_so_far)} findings collected",
+        ]
+        
+        if findings_so_far:
+            recent = findings_so_far[-3:]
+            prompt_parts.append(f"Recent Findings:")
+            for finding in recent:
+                title = finding.get('title', 'Untitled')
+                prompt_parts.append(f"  - {title}")
+        
+        prompt_parts.extend([
+            f"",
+            f"YOUR TASK:",
+            f"Execute the runbook step's objective using your intelligence and the available tools.",
+            f"The runbook provides GUIDANCE, but YOU must make the actual decisions based on what you observe.",
+            f"",
+            f"If the suggested action is '{step_action}', consider how to accomplish that given the current page state.",
+            f"You may need to adapt if the page looks different than expected.",
+            f"",
+        ])
+        
+        # Add RAG context
+        if rag_context:
+            prompt_parts.append(f"RELEVANT PAST LESSONS:\n{rag_context}\n")
+        
+        # Add history
+        if history:
+            prompt_parts.append(f"RECENT HISTORY: {json.dumps(history[-3:])}")
+        
+        # Add current state
+        prompt_parts.extend([
+            f"",
+            f"INTERACTIVE ELEMENTS ON PAGE:",
+            element_context,
+            f"",
+            Part.from_data(screenshot_bytes, mime_type="image/jpeg")
+        ])
+        
+        # Add text context if available
+        if text_context:
+            prompt_parts.append(f"--- CONTEXT DATA (Source/Network) ---\n{text_context}\n--- END DATA ---")
+        
+        prompt_parts.append("Decide your next action to accomplish this runbook step. Output valid JSON.")
+        
+        # Generate decision
+        try:
+            response = self.model.generate_content(
+                prompt_parts,
+                generation_config={"response_mime_type": "application/json"},
+                safety_settings=self.safety
+            )
+            decision = json.loads(response.text)
+            
+            # Enhance decision with runbook metadata
+            decision['runbook_step_id'] = step_id
+            decision['runbook_step_name'] = step_name
+            decision['runbook_guided'] = True
+            
+            return decision
+            
+        except Exception as e:
+            print(f"[Agent Brain Error - Runbook Mode] {e}")
+            return {
+                "thought": f"Error planning runbook step. Will try a simple approach for: {step_description}",
+                "action": "wait",
+                "value": str(e),
+                "runbook_step_id": step_id,
+                "runbook_guided": True
             }
