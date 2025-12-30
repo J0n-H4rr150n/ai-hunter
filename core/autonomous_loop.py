@@ -49,10 +49,11 @@ class AutonomousLoop:
             import base64
             # Encode screenshot as base64 for transmission
             screenshot_b64 = base64.b64encode(shadow_result["screenshot_bytes"]).decode('utf-8')
-            self.ui_callback(message, screenshot={
+            screenshot_data = {
                 "data": screenshot_b64,
                 "path": shadow_result["relative_path"]
-            })
+            }
+            self.log_to_ui(message, screenshot=screenshot_data)
         else:
             # Fallback to regular log
             self.log_to_ui(message)
@@ -61,11 +62,20 @@ class AutonomousLoop:
         """Request human approval for a tool call via HITL."""
         if not self.tool_approval_callback:
             # No callback means no HITL, auto-approve
+            print(f"[HITL] No approval callback set, auto-approving {tool_name}")
+            return {'approved': True, 'edited_inputs': tool_inputs, 'feedback': None}
+        
+        if not self.hitl_enabled:
+            # HITL disabled, auto-approve
+            print(f"[HITL] HITL disabled, auto-approving {tool_name}")
             return {'approved': True, 'edited_inputs': tool_inputs, 'feedback': None}
         
         # Call the approval callback (will block until human responds)
+        print(f"[HITL] Requesting approval for {tool_name}, blocking until response...")
         self.log_to_ui(f"[Auto] ⏸️ Requesting approval for: {tool_name}")
+        
         approval_response = self.tool_approval_callback(tool_name, tool_inputs, context)
+        print(f"[HITL] Received approval response: {approval_response}")
         
         if approval_response.get('approved'):
             if approval_response.get('edited_inputs'):
@@ -249,7 +259,17 @@ class AutonomousLoop:
         self.log_to_ui(f"[Scanner] Analyzing technology stack for: {url}")
         
         # HTTP-based tech fingerprinting
-        self.scanner.scan_url(url)
+        tech_results = self.scanner.scan_url(url)
+        
+        # Show detailed tech stack results
+        if tech_results:
+            tech_html = "<details open><summary>🔍 <b>Technology Stack Identified</b></summary><div style='padding-left: 1rem; margin-top: 0.5rem;'>"
+            for category, value in tech_results.items():
+                tech_html += f"<div>• <b>{category}</b>: {value}</div>"
+            tech_html += "</div></details>"
+            self.log_to_ui(tech_html)
+        else:
+            self.log_to_ui("[Scanner] ℹ️ No specific technologies identified.")
         
         # Browser-based visual reconnaissance
         if self.browser:
@@ -260,15 +280,18 @@ class AutonomousLoop:
             self.log_to_ui("[Auto] 📸 Capturing page snapshot with interactive elements...")
             snapshot = self.browser.get_snapshot_triad()
             
-            # Log the discovery
+            # Always capture screenshot regardless
             shadow_result = self.tracker.capture_shadow("scan_complete", {
                 "url": url,
                 "num_elements": len(snapshot['elements'])
             })
+            
+            message = f"[Auto] ✓ Found {len(snapshot['elements'])} interactive elements on page"
             if shadow_result:
-                self._send_screenshot_to_ui(f"[Auto] ✓ Found {len(snapshot['elements'])} interactive elements on page", shadow_result)
+                self._send_screenshot_to_ui(message, shadow_result)
             else:
-                self.log_to_ui(f"[Auto] ✓ Found {len(snapshot['elements'])} interactive elements on page")
+                self.log_to_ui(message)
+                self.log_to_ui("[Debug] No screenshot captured - browser might not be ready")
             
             # Save interesting findings to memory
             if snapshot['elements']:
@@ -524,8 +547,49 @@ class AutonomousLoop:
 
     def _execute_analysis(self, task):
         self.log_to_ui("[Auto] analyzing findings...")
-        # Simple summary of what's in the hive
+        # Get all findings from the hive
         all_findings = self.repo.search_findings()
-        summary = f"Total findings: {len(all_findings)}"
-        self.log_to_ui(f"[Auto] Analysis: {summary}")
+        
+        # Categorize findings
+        by_type = {}
+        critical_vulns = []
+        for finding in all_findings:
+            ftype = finding.get('finding_type', 'unknown')
+            by_type[ftype] = by_type.get(ftype, 0) + 1
+            
+            # Check for critical vulnerabilities
+            if finding.get('severity') in ['critical', 'high'] or \
+               finding.get('finding_type') in ['vulnerability', 'injection', 'xss', 'sqli', 'rce']:
+                critical_vulns.append(finding)
+        
+        # Build complete HTML as single message
+        analysis_html = f"<details open><summary>📊 <b>Findings Analysis ({len(all_findings)} total)</b></summary>"
+        analysis_html += "<div style='padding-left: 1rem; margin-top: 0.5rem;'>"
+        
+        # Show breakdown by type
+        if by_type:
+            analysis_html += "<div><b>Breakdown by Type:</b></div>"
+            for ftype, count in sorted(by_type.items(), key=lambda x: x[1], reverse=True):
+                analysis_html += f"<div>• {ftype}: {count}</div>"
+        
+        # Show critical vulnerabilities
+        if critical_vulns:
+            analysis_html += f"<div style='margin-top: 0.5rem;'><b>⚠️ Critical/High Severity ({len(critical_vulns)}):</b></div>"
+            for vuln in critical_vulns[:5]:  # Show first 5
+                content = vuln.get('content', {})
+                severity = vuln.get('severity', 'unknown')
+                ftype = vuln.get('finding_type', 'unknown')
+                url = content.get('url', 'N/A')
+                analysis_html += f"<div style='margin-left: 1rem;'>🔴 [{severity.upper()}] {ftype} at {url}</div>"
+                if 'description' in content:
+                    analysis_html += f"<div style='margin-left: 2rem;'>→ {content['description']}</div>"
+            if len(critical_vulns) > 5:
+                analysis_html += f"<div style='margin-left: 1rem;'>... and {len(critical_vulns) - 5} more</div>"
+        else:
+            analysis_html += "<div style='margin-top: 0.5rem;'>✅ No critical vulnerabilities detected</div>"
+        
+        analysis_html += "</div></details>"
+        self.log_to_ui(analysis_html)
+        
+        summary = f"Found {len(all_findings)} total findings, {len(critical_vulns)} critical/high severity"
         self.planner.complete_task(task['id'], summary)

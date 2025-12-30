@@ -68,11 +68,14 @@ class TechScanner:
             if technologies:
                 print(f"[Scanner] 🔍 Identified: {technologies}")
                 self._save_results(url, technologies)
+                return technologies
             else:
                 print("[Scanner] No specific technologies identified.")
+                return None
 
         except requests.exceptions.RequestException as e:
             print(f"[Scanner] Scan failed: {e}")
+            return None
 
     def _fingerprint(self, response):
         """

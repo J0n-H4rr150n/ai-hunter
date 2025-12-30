@@ -27,6 +27,7 @@ from core.agent_tracker import AgentTracker
 from memory.finding_repository import FindingRepository
 from backend.database import Database
 from backend.redis_manager import RedisManager
+from core.state_manager import StateManager
 
 # Setup logging
 log_dir = Path(__file__).parent.parent / "hive_bucket" / "logs"
@@ -70,6 +71,7 @@ app.add_middleware(
 # Global state
 db = Database()
 redis_mgr = RedisManager()
+state_mgr = None  # Initialize after db is ready
 active_missions = {}
 plan_approval_queues = {}  # mission_id -> asyncio.Queue for plan approvals
 tool_approval_queues = {}  # mission_id -> asyncio.Queue for tool approvals (HITL)
@@ -330,6 +332,7 @@ async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: st
             """Request approval for a tool call"""
             # Check if HITL is enabled
             if not hitl_enabled:
+                backend_logger.debug(f"[Mission {mission_id}] HITL disabled, auto-approving: {tool_name}")
                 return {'approved': True, 'edited_inputs': tool_inputs, 'feedback': None}
             
             # Check if tool is auto-approved
@@ -339,6 +342,7 @@ async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: st
             
             # Request human approval
             backend_logger.info(f"[Mission {mission_id}] Requesting approval for: {tool_name}")
+            print(f"[HITL Backend] Publishing approval request for {tool_name}")
             
             event_data = {
                 "type": "tool_approval_request",
@@ -350,11 +354,13 @@ async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: st
             }
             
             await redis_mgr.publish_event("missions:all", event_data)
+            print(f"[HITL Backend] Published, now waiting for response...")
             
             # Wait for approval response
             start_time = datetime.utcnow()
             approval_response = await tool_approval_queue.get()
             response_time_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            print(f"[HITL Backend] Received response after {response_time_ms}ms: approved={approval_response.get('approved')}")
             
             # Save to database
             await db.save_tool_approval(
@@ -551,10 +557,12 @@ async def approve_tool(approval: dict):
 @app.on_event("startup")
 async def startup():
     """Initialize database and connections"""
+    global state_mgr
     backend_logger.info("Starting backend API...")
     await db.initialize()
     await redis_mgr.connect()
-    backend_logger.info("🚀 Backend API started")
+    state_mgr = StateManager(db)
+    backend_logger.info("🚀 Backend API started with state management")
     print("🚀 Backend API started")
 
 @app.on_event("shutdown")
