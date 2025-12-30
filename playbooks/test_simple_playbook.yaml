@@ -1,6 +1,7 @@
 ---
 # Simple Test Playbook for Initial Development
 # Used to verify playbook executor is working correctly
+# yaml-language-server: $schema=<schema-url>
 
 metadata:
   name: "Simple Test Playbook"

@@ -1,6 +1,7 @@
 ---
 # CTF IDOR Playbook
 # Objective: Test for Insecure Direct Object References in CTF/vulnerable apps
+# yaml-language-server: $schema=<schema-url>
 
 metadata:
   name: "CTF IDOR Testing"

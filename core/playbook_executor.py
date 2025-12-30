@@ -36,6 +36,7 @@ class PlaybookExecutorContext:
         self.instructions = instructions
         self.start_time = datetime.utcnow()
         self.playbook_name = None
+        self.playbook = None  # Full playbook definition
         self.execution_id = None
         
         # Findings aggregation

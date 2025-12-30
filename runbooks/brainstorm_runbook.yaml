@@ -108,7 +108,6 @@ steps:
     description: "Look for combinations of findings that create exploitation chains"
     depends_on: ["agent_creative_analysis"]
     tool: "findings_aggregator"
-    tool: "findings_aggregator"
     agent_mode: tool_only
     chain_patterns:
       - "IDOR + Info disclosure = Account takeover"
@@ -128,7 +127,6 @@ steps:
     description: "Evaluate business risk and potential impact of discovered issues"
     depends_on: ["identify_vulnerability_chains"]
     tool: "findings_aggregator"
-    tool: "findings_aggregator"
     agent_mode: tool_only
     risk_factors:
       - "Data sensitivity (PII, financial, credentials)"
@@ -146,7 +144,8 @@ steps:
     name: "Generate Testing Recommendations"
     action: "compile_findings"
     description: "Suggest additional tests and unexplored attack vectors based on agent analysis"
-    dependsfindings_aggregator"
+    depends_on: ["agent_creative_analysis"]
+    tool: "findings_aggregator"
     agent_mode: tool_only
     recommendation_logic:
       - "IF APIs found AND not tested → Suggest API fuzzing"
@@ -186,7 +185,8 @@ steps:
     name: "Draft Remediation Guidance"
     action: "review_findings"
     description: "Provide preliminary remediation recommendations"
-    dependsfindings_aggregator"
+    depends_on: ["generate_testing_recommendations"]
+    tool: "findings_aggregator"
     agent_mode: tool_only
     remediation_categories:
       - "Quick fixes (configuration changes)"
@@ -215,12 +215,7 @@ steps:
     ]
     tool: "report_generator"
     agent_mode: tool_only
-    report_type: "technicalty_chains",
-      "assess_risk_and_impact",
-      "generate_testing_recommendations",
-      "draft_remediation_guidance"
-    ]
-    tool: "report_generator"
+    report_type: "technical"
     report_sections:
       - "Executive summary"
       - "Key findings (top 10)"
