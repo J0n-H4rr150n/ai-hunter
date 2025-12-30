@@ -54,7 +54,7 @@ def upgrade() -> None:
         sa.Column('approved', sa.Boolean(), nullable=False),
         sa.Column('edited_inputs', postgresql.JSONB(astext_type=sa.Text()), nullable=True),  # If human edited the tool call
         sa.Column('feedback', sa.Text(), nullable=True),  # Human's reason for approval/rejection
-        sa.Column('embedding', Vector(384), nullable=True),  # Vector embedding of context+feedback for RAG
+        sa.Column('embedding', Vector(512), nullable=True),  # Vector embedding of context+feedback for RAG (TensorFlow USE)
         sa.Column('response_time_ms', sa.Integer(), nullable=True),  # How long human took to respond
         sa.Column('created_at', sa.TIMESTAMP(), nullable=True, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.ForeignKeyConstraint(['mission_id'], ['missions.id'], ondelete='CASCADE'),

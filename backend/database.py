@@ -8,6 +8,9 @@ import json
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
+# Check if embeddings are disabled
+EMBEDDINGS_ENABLED = os.getenv('DISABLE_EMBEDDINGS', 'true').lower() not in ('1', 'true', 'yes')
+
 class Database:
     def __init__(self):
         self.pool: Optional[asyncpg.Pool] = None
@@ -131,9 +134,9 @@ class Database:
         response_time_ms: Optional[int] = None
     ) -> int:
         """Save a tool approval decision with embedding"""
-        # Generate embedding from context + feedback for RAG
+        # Generate embedding from context + feedback for RAG (if enabled)
         embedding = None
-        if feedback or context:
+        if EMBEDDINGS_ENABLED and (feedback or context):
             try:
                 embedding_vector = await self._generate_approval_embedding(tool_name, tool_inputs, context, feedback, approved)
                 # Convert list to pgvector string format: '[0.1, 0.2, 0.3]'
@@ -159,15 +162,15 @@ class Database:
         return approval_id
     
     async def _generate_approval_embedding(self, tool_name: str, tool_inputs: dict, context: Optional[dict], feedback: Optional[str], approved: bool) -> List[float]:
-        """Generate embedding for tool approval using Vertex AI"""
-        import vertexai
-        from vertexai.language_models import TextEmbeddingModel
-        from config.config import Config
-        
-        # Initialize Vertex AI if not already done
+        """Generate embedding for tool approval using TensorFlow Universal Sentence Encoder"""
         try:
-            vertexai.init(project=Config.GCP_PROJECT_ID, location=Config.GCP_LOCATION)
-            model = TextEmbeddingModel.from_pretrained("text-embedding-004")
+            import tensorflow_hub as hub
+            import tensorflow_text as text
+            import numpy as np
+            
+            # Load model (cached after first load)
+            kaggle_handle = "https://www.kaggle.com/models/google/universal-sentence-encoder/tensorFlow2/universal-sentence-encoder/2?tfhub-redirect=true"
+            model = hub.load(kaggle_handle)
             
             # Construct text for embedding
             text_parts = [
@@ -184,16 +187,11 @@ class Database:
             if feedback:
                 text_parts.append(f"Feedback: {feedback}")
             
-            text = " | ".join(text_parts)
+            text_to_embed = " | ".join(text_parts)
             
-            # Generate embedding (text-embedding-004 produces 768-dimensional vectors, but we use 384)
-            # Note: If model outputs 768, we'll need to update the schema or use dimensionality reduction
-            embeddings = model.get_embeddings([text])
-            vector = embeddings[0].values
-            
-            # Truncate to 384 dimensions if needed (or we could update schema to 768)
-            if len(vector) > 384:
-                vector = vector[:384]
+            # Generate embedding (Universal Sentence Encoder produces 512-dimensional vectors)
+            embeddings = model([text_to_embed])
+            vector = np.array(embeddings[0]).tolist()
             
             return vector
             
@@ -203,6 +201,9 @@ class Database:
     
     async def search_similar_approvals(self, tool_name: str, tool_inputs: dict, context: Optional[dict], limit: int = 5) -> List[Dict[str, Any]]:
         """Search for similar past tool approvals using vector similarity"""
+        if not EMBEDDINGS_ENABLED:
+            return []
+        
         try:
             # Generate embedding for the query
             query_embedding = await self._generate_approval_embedding(tool_name, tool_inputs, context, None, True)

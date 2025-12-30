@@ -60,7 +60,7 @@ class AgentTracker:
         Returns:
             dict: {"filepath": str, "screenshot_bytes": bytes, "relative_path": str} or None
         """
-        timestamp = datetime.now().strftime("%H-%M-%S-%f")[:-3]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Always save metadata
         if metadata:

@@ -118,7 +118,7 @@ def upgrade() -> None:
         sa.Column('finding_type', sa.String(length=100), nullable=True),
         sa.Column('source', sa.String(length=100), nullable=True),
         sa.Column('tags', postgresql.ARRAY(sa.Text()), nullable=True),
-        sa.Column('embedding', Vector(384), nullable=True),
+        sa.Column('embedding', Vector(512), nullable=True),  # TensorFlow USE
         sa.Column('severity', sa.String(length=20), nullable=True),
         sa.Column('verified', sa.Boolean(), nullable=True, server_default='false'),
         sa.Column('created_at', sa.TIMESTAMP(), nullable=True, server_default=sa.text('CURRENT_TIMESTAMP')),
@@ -161,7 +161,7 @@ def upgrade() -> None:
         sa.Column('mission_id', sa.Integer(), nullable=True),
         sa.Column('memory_type', sa.String(length=50), nullable=True),
         sa.Column('content', sa.Text(), nullable=False),
-        sa.Column('embedding', Vector(384), nullable=True),
+        sa.Column('embedding', Vector(512), nullable=True),  # TensorFlow USE
         sa.Column('context', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column('relevance_score', sa.Float(), nullable=True),
         sa.Column('created_at', sa.TIMESTAMP(), nullable=True, server_default=sa.text('CURRENT_TIMESTAMP')),

@@ -99,7 +99,7 @@ Used for permanent knowledge and reinforcement learning.
 Table: feedback\_memory  
 | Column | Type | Purpose |  
 | :--- | :--- | :--- |  
-| embedding | vector(768) | Semantic vector of the Thought \+ Tool context. |  
+| embedding | vector(512) | Semantic vector of the Thought \+ Tool context (TensorFlow USE). |  
 | human\_critique | TEXT | The correction provided by the user (e.g., "Don't fuzz \> 100 IDs"). |  
 | rating | FLOAT | 0.0 (Bad) to 1.0 (Good). |  
 | access\_count | INT | Used for Least-Frequently-Used (LFU) pruning. |  

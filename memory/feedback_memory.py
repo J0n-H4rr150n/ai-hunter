@@ -4,13 +4,35 @@ import os
 import glob
 import numpy as np
 from typing import List, Dict, Tuple, Optional
-import vertexai
-from vertexai.language_models import TextEmbeddingModel
+
+# Optional imports for embeddings
+EMBEDDINGS_ENABLED = os.getenv('DISABLE_EMBEDDINGS', 'true').lower() not in ('1', 'true', 'yes')
+
+if EMBEDDINGS_ENABLED:
+    try:
+        import tensorflow_hub as hub
+        import tensorflow_text as text  # Required for TF2 USE model
+        print("[FeedbackMemory] Embeddings enabled via TensorFlow USE")
+    except ImportError:
+        EMBEDDINGS_ENABLED = False
+        print("[FeedbackMemory] Warning: TensorFlow Hub not available, embeddings disabled")
+else:
+    print("[FeedbackMemory] Embeddings disabled via DISABLE_EMBEDDINGS env var")
 
 class FeedbackMemory:
-    def __init__(self, project_id: str, base_path=None):
-        vertexai.init(project=project_id)
-        self.model = TextEmbeddingModel.from_pretrained("text-embedding-004")
+    def __init__(self, project_id: str = None, base_path=None):
+        self.model = None
+        
+        if EMBEDDINGS_ENABLED:
+            try:
+                # Load Universal Sentence Encoder from Kaggle (512 dimensions)
+                print("[FeedbackMemory] Loading Universal Sentence Encoder from Kaggle...")
+                kaggle_handle = "https://www.kaggle.com/models/google/universal-sentence-encoder/tensorFlow2/universal-sentence-encoder/2?tfhub-redirect=true"
+                self.model = hub.load(kaggle_handle)
+                print("[FeedbackMemory] ✓ TensorFlow USE embedding model loaded (512 dims)")
+            except Exception as e:
+                print(f"[FeedbackMemory] ⚠️  Failed to load embedding model: {e}")
+                print("[FeedbackMemory] Continuing without embeddings")
         
         # 1. Hive Storage Configuration
         # Consistent cross-platform path: ~/ai-hunter/hive
@@ -73,19 +95,25 @@ class FeedbackMemory:
             self.vector_cache = None
 
     def _get_embedding(self, text: str) -> List[float]:
+        if not self.model:
+            return None  # Return None when embeddings disabled
         try:
-            return self.model.get_embeddings([text])[0].values
+            # TensorFlow USE returns tensor, convert to list
+            return np.array(self.model([text])[0]).tolist()
         except:
-            return [0.0] * 768 
+            return None 
 
     def store_feedback(self, tool: str, thought: str, action_val: str, rating: float, reason: str):
         """
         Writes feedback to a Hive-partitioned JSONL file.
         Path: table=feedback/tool={tool}/data.jsonl
         """
-        # 1. Generate Embedding
-        vector_text = f"{tool} {thought} {reason}"
-        new_vec = self._get_embedding(vector_text)
+        # 1. Generate Embedding (if enabled)
+        new_vec = None
+        if self.model:
+            vector_text = f"{tool} {thought} {reason}"
+            new_vec = self._get_embedding(vector_text)
+        
         timestamp = time.time()
         
         record = {
@@ -99,8 +127,8 @@ class FeedbackMemory:
             "embedding": new_vec
         }
 
-        # 2. Check for Duplicates (In-Memory Check)
-        if self.vector_cache is not None and len(self.vector_cache) > 0:
+        # 2. Check for Duplicates (In-Memory Check) - only if embeddings enabled
+        if new_vec and self.vector_cache is not None and len(self.vector_cache) > 0:
             # Cosine Sim logic
             sims = np.dot(self.vector_cache, new_vec) / (
                 np.linalg.norm(self.vector_cache, axis=1) * np.linalg.norm(new_vec)
@@ -124,10 +152,11 @@ class FeedbackMemory:
             
         # 4. Update In-Memory Cache (So we can RAG it immediately)
         self.memory_cache.append(record)
-        if self.vector_cache is None:
-            self.vector_cache = np.array([new_vec])
-        else:
-            self.vector_cache = np.vstack([self.vector_cache, new_vec])
+        if new_vec:  # Only update vector cache if embedding was generated
+            if self.vector_cache is None:
+                self.vector_cache = np.array([new_vec])
+            else:
+                self.vector_cache = np.vstack([self.vector_cache, new_vec])
             
         print(f"[Memory] Saved lesson to local Hive: {file_path}")
 
@@ -135,10 +164,12 @@ class FeedbackMemory:
         """
         RAG using In-Memory Numpy Search.
         """
-        if self.vector_cache is None or len(self.memory_cache) == 0:
+        if not self.model or self.vector_cache is None or len(self.memory_cache) == 0:
             return ""
 
         query_vec = self._get_embedding(current_thought + " " + current_tool)
+        if query_vec is None:
+            return ""
         
         # 1. Vector Math (Cosine Similarity)
         # Dot product of Query vs All Vectors

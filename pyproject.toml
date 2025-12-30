@@ -12,10 +12,10 @@ requests = "^2.31.0"
 Pillow = "^10.0.0"
 # We explicitly request Numpy 2.1+ which has Python 3.13 wheels
 numpy = "^2.1.0"
-# Force CPU-only PyTorch (no CUDA) - must be before sentence-transformers
-torch = {version = "^2.5.0", source = "pytorch-cpu"}
-# We update sentence-transformers to the latest to hope for Numpy 2.x compatibility
-sentence-transformers = "^3.2.0"
+# TensorFlow for Universal Sentence Encoder (offline, corporate-friendly)
+tensorflow = "^2.15.0"
+tensorflow-hub = "^0.16.1"
+tensorflow-text = "^2.15.0"
 # Playwright for browser automation
 playwright = "^1.49.0"
 # Google Cloud Vertex AI for Gemini LLM

@@ -11,14 +11,14 @@ let eventSource = null;
 function logToBackend(level, message, data = null) {
     // Log to console
     const consoleMsg = data ? `${message} ${JSON.stringify(data)}` : message;
-    switch(level) {
+    switch (level) {
         case 'DEBUG': console.log(`🔍 ${consoleMsg}`); break;
         case 'INFO': console.info(`ℹ️ ${consoleMsg}`); break;
         case 'WARN': console.warn(`⚠️ ${consoleMsg}`); break;
         case 'ERROR': console.error(`❌ ${consoleMsg}`); break;
         default: console.log(consoleMsg);
     }
-    
+
     // Send to backend
     fetch(`${BACKEND_URL}/api/log/frontend`, {
         method: 'POST',
@@ -52,21 +52,7 @@ function connectToSSE() {
     };
 
     // Listen for different event types
-    eventSource.addEventListener('mission_started', (event) => {
-        const data = JSON.parse(event.data);
-        addToFeed({
-            message: data.message,
-            timestamp: data.timestamp
-        });
-    });
-
-    eventSource.addEventListener('mission_log', (event) => {
-        const data = JSON.parse(event.data);
-        addToFeed({
-            message: data.message,
-            timestamp: data.timestamp
-        });
-    });
+    // Note: mission_started and mission_log are handled below with full logic
 
     eventSource.addEventListener('plan_generated', (event) => {
         logToBackend('INFO', 'Received plan_generated event');
@@ -94,13 +80,13 @@ function connectToSSE() {
     eventSource.addEventListener('mission_log', (event) => {
         const data = JSON.parse(event.data);
         console.log('📝 Mission log event:', data);
-        
+
         // Update current mission ID
         if (data.mission_id && !currentMissionId) {
             currentMissionId = data.mission_id;
             console.log('🎯 Set currentMissionId to:', currentMissionId);
         }
-        
+
         // Add to feed with screenshot if present
         addToFeed({
             message: data.message,
@@ -112,13 +98,13 @@ function connectToSSE() {
     eventSource.addEventListener('mission_started', (event) => {
         const data = JSON.parse(event.data);
         console.log('🚀 Mission started event:', data);
-        
+
         // Set current mission ID
         if (data.mission_id) {
             currentMissionId = data.mission_id;
             console.log('🎯 Set currentMissionId to:', currentMissionId);
         }
-        
+
         addToFeed({
             message: data.message || `🚀 Mission ${data.mission_id} started`,
             timestamp: data.timestamp || new Date().toISOString()
@@ -144,13 +130,13 @@ function connectToSSE() {
     eventSource.addEventListener('mission_complete', (event) => {
         const data = JSON.parse(event.data);
         console.log('✅ Mission complete event:', data);
-        
+
         addToFeed({
             message: `✅ ${data.message || data.summary || 'Mission complete'}`,
             timestamp: data.timestamp || new Date().toISOString()
         });
         handleMissionComplete(data);
-        
+
         // Keep mission ID for evidence viewing
         console.log('Mission complete - currentMissionId remains:', currentMissionId);
     });
@@ -250,15 +236,15 @@ function showPlanApproval(plan, missionId) {
     console.log('🎨 showPlanApproval called with:', { plan, missionId });
     currentPlan = plan;
     currentMissionId = missionId;
-    
+
     const feedContent = document.getElementById('feed-content');
     console.log('📦 feedContent element:', feedContent);
-    
+
     const planEntry = document.createElement('div');
     planEntry.id = `plan-approval-${missionId}`;
     planEntry.className = 'p-4 bg-yellow-900 bg-opacity-30 rounded-lg border-2 border-yellow-500';
     console.log('✨ Created plan entry element');
-    
+
     planEntry.innerHTML = `
         <h3 class="text-lg font-semibold text-yellow-300 mb-3">⏸️ Plan Approval Required</h3>
         
@@ -274,14 +260,14 @@ function showPlanApproval(plan, missionId) {
             <p class="text-sm font-semibold text-gray-300 mb-1">📝 Steps:</p>
             <ol class="text-sm text-gray-400 list-decimal list-inside space-y-1">
                 ${plan.steps.map(step => {
-                    if (typeof step === 'object') {
-                        const action = step.action || '';
-                        const target = step.target || step.element || '';
-                        const description = step.description || step.summary || '';
-                        return `<li class="ml-2">${action}${target ? ': ' + target : ''}${description ? ' - ' + description : ''}</li>`;
-                    }
-                    return `<li class="ml-2">${step}</li>`;
-                }).join('')}
+        if (typeof step === 'object') {
+            const action = step.action || '';
+            const target = step.target || step.element || '';
+            const description = step.description || step.summary || '';
+            return `<li class="ml-2">${action}${target ? ': ' + target : ''}${description ? ' - ' + description : ''}</li>`;
+        }
+        return `<li class="ml-2">${step}</li>`;
+    }).join('')}
             </ol>
         </div>
         ` : ''}
@@ -290,9 +276,9 @@ function showPlanApproval(plan, missionId) {
         <div class="mb-3">
             <p class="text-sm font-semibold text-gray-300 mb-1">💰 Budgets:</p>
             <div class="text-xs text-gray-400">
-                ${Object.entries(plan.budgets).map(([tool, count]) => 
-                    `<span class="inline-block mr-3">• ${tool}: ${count}</span>`
-                ).join('')}
+                ${Object.entries(plan.budgets).map(([tool, count]) =>
+        `<span class="inline-block mr-3">• ${tool}: ${count}</span>`
+    ).join('')}
             </div>
         </div>
         ` : ''}
@@ -312,7 +298,7 @@ function showPlanApproval(plan, missionId) {
             </button>
         </div>
     `;
-    
+
     console.log('📝 Plan HTML generated, inserting into feed...');
     // Append to end and auto-scroll
     feedContent.appendChild(planEntry);
@@ -322,18 +308,18 @@ function showPlanApproval(plan, missionId) {
 }
 
 // Approve plan inline
-window.approvePlanInline = async function(missionId) {
+window.approvePlanInline = async function (missionId) {
     try {
         await fetch(`${BACKEND_URL}/api/missions/${missionId}/approve`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ plan: currentPlan })
         });
-        
+
         // Remove plan approval from feed
         const planEntry = document.getElementById(`plan-approval-${missionId}`);
         if (planEntry) planEntry.remove();
-        
+
         addToFeed({
             message: '✅ Plan approved - Execution starting...',
             timestamp: new Date().toISOString()
@@ -344,21 +330,21 @@ window.approvePlanInline = async function(missionId) {
 };
 
 // Reject plan inline
-window.rejectPlanInline = async function(missionId) {
+window.rejectPlanInline = async function (missionId) {
     try {
         await fetch(`${BACKEND_URL}/api/missions/${missionId}/reject`, {
             method: 'POST'
         });
-        
+
         // Remove plan approval from feed
         const planEntry = document.getElementById(`plan-approval-${missionId}`);
         if (planEntry) planEntry.remove();
-        
+
         addToFeed({
             message: '❌ Plan rejected - Mission aborted',
             timestamp: new Date().toISOString()
         });
-        
+
         currentMissionId = null;
     } catch (error) {
         console.error('Failed to reject plan:', error);
@@ -366,12 +352,12 @@ window.rejectPlanInline = async function(missionId) {
 };
 
 // Edit plan inline
-window.editPlanInline = function(missionId) {
+window.editPlanInline = function (missionId) {
     const newRationale = prompt('Edit Rationale:', currentPlan.rationale);
     if (newRationale !== null) {
         currentPlan.rationale = newRationale;
     }
-    
+
     // Refresh display
     const planEntry = document.getElementById(`plan-approval-${missionId}`);
     if (planEntry) planEntry.remove();
@@ -382,20 +368,20 @@ window.editPlanInline = function(missionId) {
 function showToolApproval(data) {
     const { mission_id, tool_name, tool_inputs, context } = data;
     const feedContent = document.getElementById('feed-content');
-    
+
     const toolEntry = document.createElement('div');
     const entryId = `tool-approval-${mission_id}-${Date.now()}`;
     toolEntry.id = entryId;
     toolEntry.className = 'p-4 bg-orange-900 bg-opacity-30 rounded-lg border-2 border-orange-500';
-    
+
     // Format tool inputs for display
     const inputsHTML = Object.entries(tool_inputs).map(([key, value]) => {
-        const displayValue = typeof value === 'string' && value.length > 100 
-            ? value.substring(0, 100) + '...' 
+        const displayValue = typeof value === 'string' && value.length > 100
+            ? value.substring(0, 100) + '...'
             : JSON.stringify(value);
         return `<div class="flex"><span class="font-semibold text-gray-400 mr-2">${key}:</span><span class="text-gray-300">${displayValue}</span></div>`;
     }).join('');
-    
+
     toolEntry.innerHTML = `
         <h3 class="text-lg font-semibold text-orange-300 mb-3">🛠️ Tool Approval Required</h3>
         
@@ -438,22 +424,22 @@ function showToolApproval(data) {
             </button>
         </div>
     `;
-    
+
     // Store original data on the element for later use
     toolEntry.dataset.toolInputs = JSON.stringify(tool_inputs);
     toolEntry.dataset.context = JSON.stringify(context);
-    
+
     feedContent.appendChild(toolEntry);
     feedContent.scrollTop = feedContent.scrollHeight;
 }
 
 // Approve tool call
-window.approveToolCall = async function(missionId, toolName, entryId) {
+window.approveToolCall = async function (missionId, toolName, entryId) {
     const toolEntry = document.getElementById(entryId);
     const feedback = document.getElementById(`feedback-${entryId}`)?.value || '';
     const toolInputs = JSON.parse(toolEntry.dataset.toolInputs);
     const context = JSON.parse(toolEntry.dataset.context);
-    
+
     try {
         await fetch(`${BACKEND_URL}/api/tools/approve`, {
             method: 'POST',
@@ -467,10 +453,10 @@ window.approveToolCall = async function(missionId, toolName, entryId) {
                 feedback: feedback
             })
         });
-        
+
         // Remove approval request from feed
         if (toolEntry) toolEntry.remove();
-        
+
         addToFeed({
             message: `✅ Approved tool: ${toolName}`,
             timestamp: new Date().toISOString()
@@ -481,12 +467,12 @@ window.approveToolCall = async function(missionId, toolName, entryId) {
 };
 
 // Reject tool call
-window.rejectToolCall = async function(missionId, toolName, entryId) {
+window.rejectToolCall = async function (missionId, toolName, entryId) {
     const toolEntry = document.getElementById(entryId);
     const feedback = document.getElementById(`feedback-${entryId}`)?.value || '';
     const toolInputs = JSON.parse(toolEntry.dataset.toolInputs);
     const context = JSON.parse(toolEntry.dataset.context);
-    
+
     try {
         await fetch(`${BACKEND_URL}/api/tools/approve`, {
             method: 'POST',
@@ -500,10 +486,10 @@ window.rejectToolCall = async function(missionId, toolName, entryId) {
                 feedback: feedback
             })
         });
-        
+
         // Remove approval request from feed
         if (toolEntry) toolEntry.remove();
-        
+
         addToFeed({
             message: `❌ Rejected tool: ${toolName}${feedback ? ' - ' + feedback : ''}`,
             timestamp: new Date().toISOString()
@@ -526,18 +512,18 @@ function addToFeed(data) {
 
     const entry = document.createElement('div');
     entry.className = 'p-3 bg-gray-700 rounded-lg border-l-4 border-blue-500';
-    
+
     let screenshotHTML = '';
     if (data.screenshot) {
         console.log('📸 Screenshot data received:', data.screenshot);
-        
+
         // Check if screenshot has URL (new format) or data (old base64 format)
-        const imgSrc = data.screenshot.url 
+        const imgSrc = data.screenshot.url
             ? `http://${window.location.hostname}:33003${data.screenshot.url}`  // Use current hostname
             : `data:image/png;base64,${data.screenshot.data}`;  // Fallback base64
-        
+
         console.log('📸 Screenshot URL:', imgSrc);
-        
+
         screenshotHTML = `
             <div class="mt-2 mb-2">
                 <img src="${imgSrc}" 
@@ -550,7 +536,7 @@ function addToFeed(data) {
             </div>
         `;
     }
-    
+
     entry.innerHTML = `
         <div class="flex justify-between items-start">
             <div class="flex-1">
@@ -610,7 +596,7 @@ async function loadSettings() {
 function applySettingsToUI() {
     document.getElementById('hitl-enabled').checked = currentSettings.hitl_enabled;
     document.getElementById('hitl-options').classList.toggle('hidden', !currentSettings.hitl_enabled);
-    
+
     document.querySelectorAll('.auto-approve-tool').forEach(checkbox => {
         checkbox.checked = currentSettings.auto_approve_tools.includes(checkbox.value);
     });
@@ -649,14 +635,14 @@ async function loadEvidence() {
         if (!response.ok) {
             throw new Error('Failed to load artifacts');
         }
-        
+
         const artifacts = await response.json();
         console.log('📦 Artifacts loaded:', artifacts);
-        
+
         // Display screenshots
         const screenshotsContainer = document.getElementById('evidence-screenshots');
         document.getElementById('screenshot-count').textContent = artifacts.screenshots.length;
-        
+
         if (artifacts.screenshots.length === 0) {
             screenshotsContainer.innerHTML = '<p class="text-gray-400 col-span-full">No screenshots captured yet</p>';
         } else {
@@ -675,11 +661,11 @@ async function loadEvidence() {
                 </div>
             `).join('');
         }
-        
+
         // Display metadata files
         const metadataContainer = document.getElementById('evidence-metadata');
         document.getElementById('metadata-count').textContent = artifacts.metadata.length;
-        
+
         if (artifacts.metadata.length === 0) {
             metadataContainer.innerHTML = '<p class="text-gray-400">No metadata files</p>';
         } else {
@@ -691,11 +677,11 @@ async function loadEvidence() {
                 </div>
             `).join('');
         }
-        
+
         // Display findings
         const findingsContainer = document.getElementById('evidence-findings');
         document.getElementById('findings-count').textContent = artifacts.findings.length;
-        
+
         if (artifacts.findings.length === 0) {
             findingsContainer.innerHTML = '<p class="text-gray-400">No findings saved</p>';
         } else {
@@ -705,7 +691,7 @@ async function loadEvidence() {
                 if (!byType[f.type]) byType[f.type] = [];
                 byType[f.type].push(f);
             });
-            
+
             findingsContainer.innerHTML = Object.entries(byType).map(([type, findings]) => `
                 <details open class="bg-gray-700 rounded p-3">
                     <summary class="cursor-pointer font-semibold text-gray-300 mb-2">
@@ -722,7 +708,7 @@ async function loadEvidence() {
                 </details>
             `).join('');
         }
-        
+
     } catch (error) {
         console.error('Failed to load evidence:', error);
         document.getElementById('evidence-screenshots').innerHTML = '<p class="text-red-400">Failed to load evidence</p>';
@@ -775,19 +761,19 @@ document.getElementById('save-settings-btn').addEventListener('click', async () 
     const hitlEnabled = document.getElementById('hitl-enabled').checked;
     const autoApproveTools = Array.from(document.querySelectorAll('.auto-approve-tool:checked'))
         .map(cb => cb.value);
-    
+
     currentSettings = {
         hitl_enabled: hitlEnabled,
         auto_approve_tools: autoApproveTools
     };
-    
+
     try {
         const response = await fetch(`${BACKEND_URL}/api/settings`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(currentSettings)
         });
-        
+
         if (response.ok) {
             document.getElementById('settings-modal').classList.add('hidden');
             addToFeed({

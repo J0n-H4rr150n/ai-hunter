@@ -10,16 +10,17 @@ from config.config import Config
 # Optional imports for semantic features
 try:
     # Allow disabling semantic search via environment variable
-    if os.getenv('DISABLE_SEMANTIC_SEARCH', '').lower() in ('1', 'true', 'yes'):
+    if os.getenv('DISABLE_EMBEDDINGS', 'true').lower() in ('1', 'true', 'yes'):
         SEMANTIC_AVAILABLE = False
-        print("[Memory] Semantic search disabled via DISABLE_SEMANTIC_SEARCH env var")
+        print("[Memory] Embeddings disabled via DISABLE_EMBEDDINGS env var")
     else:
-        from sentence_transformers import SentenceTransformer
+        import tensorflow_hub as hub
+        import tensorflow_text as text  # Required for TF2 USE model
         import numpy as np
         SEMANTIC_AVAILABLE = True
 except ImportError:
     SEMANTIC_AVAILABLE = False
-    # print("[Memory] Warning: 'sentence_transformers' or 'numpy' not found. Semantic search disabled.")
+    # print("[Memory] Warning: 'tensorflow-hub' or 'tensorflow-text' not found. Semantic search disabled.")
 
 class FindingRepository:
     """
@@ -36,12 +37,13 @@ class FindingRepository:
         self.embedder = None
         if SEMANTIC_AVAILABLE:
             try:
-                # Load a lightweight model optimized for local speed
-                # 'all-MiniLM-L6-v2' is a standard for efficient local embeddings
-                print("[Memory] Loading semantic search model 'all-MiniLM-L6-v2'...")
-                print("         (First run will download ~90MB model, may take 1-2 minutes)")
-                self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
-                print("[Memory] ✓ Semantic search enabled")
+                # Load Universal Sentence Encoder from Kaggle (no Hugging Face!)
+                # Model outputs 512-dimensional embeddings
+                print("[Memory] Loading Universal Sentence Encoder from Kaggle...")
+                print("         (First run will download ~1GB model, may take 3-5 minutes)")
+                kaggle_handle = "https://www.kaggle.com/models/google/universal-sentence-encoder/tensorFlow2/universal-sentence-encoder/2?tfhub-redirect=true"
+                self.embedder = hub.load(kaggle_handle)
+                print("[Memory] ✓ Semantic search enabled (TensorFlow USE, 512 dims)")
             except Exception as e:
                 print(f"[Memory] ⚠️  Could not load embedding model: {e}")
                 print(f"[Memory] Continuing without semantic search capability")
@@ -54,27 +56,50 @@ class FindingRepository:
     def save_finding(self, content: Any, finding_type: str = "general", source: str = None, tags: List[str] = None) -> str:
         """
         Saves a new finding to the hive bucket immediately.
-        If semantic search is enabled, the embedding is generated in a 
-        background thread to avoid blocking the main execution loop.
-        
-        Args:
-            content: The actual data (dict, string, or list).
-            finding_type: Category (e.g., 'credential', 'url', 'summary').
-            source: Origin of the data (e.g., URL or filename).
-            tags: List of descriptive tags for retrieval.
-            
-        Returns:
-            str: The ID of the saved finding.
+    def save_finding(
+        self, 
+        content: Any, 
+        finding_type: str = "general", 
+        source: str = "agent",
+        tags: List[str] = None
+    ) -> str:
         """
-        finding_id = str(uuid.uuid4())
-        timestamp = datetime.now().isoformat()
+        Saves a finding to the local file-based 'bucket'.
+        Deduplicates based on content hash to avoid storing identical findings.
+        """
+        import hashlib
         
-        # Organize by type to keep the file system clean
+        finding_id = str(uuid.uuid4())
+        timestamp = datetime.now(timezone.utc).isoformat()
+        
+        # Create type directory
         type_dir = self.findings_dir / finding_type
         if not os.path.exists(type_dir):
             os.makedirs(type_dir, exist_ok=True)
 
-        # Initial save without embedding (Fast)
+        # Generate content hash for deduplication
+        content_str = json.dumps(content, sort_keys=True) if isinstance(content, (dict, list)) else str(content)
+        content_hash = hashlib.sha256(content_str.encode('utf-8')).hexdigest()[:16]
+        
+        # Check if this exact content already exists
+        for filename in os.listdir(type_dir):
+            if not filename.endswith('.json'):
+                continue
+            filepath = type_dir / filename
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    existing = json.load(f)
+                existing_content_str = json.dumps(existing.get('content'), sort_keys=True) if isinstance(existing.get('content'), (dict, list)) else str(existing.get('content'))
+                existing_hash = hashlib.sha256(existing_content_str.encode('utf-8')).hexdigest()[:16]
+                
+                if existing_hash == content_hash:
+                    if Config.DEBUG:
+                        print(f"[Memory] Duplicate finding detected, skipping: {finding_type}/{filename}")
+                    return existing['id']  # Return existing ID instead of creating duplicate
+            except Exception:
+                continue
+
+        # Save to file immediately (no embedding needed in JSON files)
         finding_data = {
             "id": finding_id,
             "timestamp": timestamp,
@@ -82,7 +107,7 @@ class FindingRepository:
             "source": source,
             "tags": tags or [],
             "content": content,
-            "embedding": None # Will be updated asynchronously
+            "content_hash": content_hash
         }
 
         # Filename includes timestamp for chronological sorting in file explorer
@@ -93,14 +118,6 @@ class FindingRepository:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(finding_data, f, indent=2, ensure_ascii=False)
             
-            # Trigger async embedding generation if available
-            if self.embedder:
-                threading.Thread(
-                    target=self._generate_and_save_embedding,
-                    args=(filepath, content),
-                    daemon=True
-                ).start()
-
             if Config.DEBUG:
                 print(f"[Memory] Saved finding ({finding_type}): {filename}")
                 
@@ -108,37 +125,6 @@ class FindingRepository:
         except Exception as e:
             print(f"[Memory] Failed to save finding: {e}")
             return None
-
-    def _generate_and_save_embedding(self, filepath: Path, content: Any):
-        """
-        Helper method running in a background thread to generate 
-        embeddings and update the JSON file.
-        """
-        try:
-            # Prepare content string
-            content_str = str(content)
-            if isinstance(content, (dict, list)):
-                content_str = json.dumps(content)
-            
-            # Generate embedding (Slow operation)
-            embedding = self.embedder.encode(content_str).tolist()
-            
-            # Update the file
-            # Note: Using simple file IO. In high concurrency, file locking might be needed.
-            if os.path.exists(filepath):
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                
-                data['embedding'] = embedding
-                
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-                    
-                if Config.DEBUG:
-                    print(f"[Memory] Background embedding updated for {filepath.name}")
-
-        except Exception as e:
-            print(f"[Memory] Background embedding failed: {e}")
 
     def get_finding(self, finding_id: str) -> Optional[Dict]:
         """
@@ -195,65 +181,15 @@ class FindingRepository:
     def semantic_search(self, query: str, limit: int = 5, finding_type: str = None) -> List[Dict]:
         """
         Performs a semantic search against finding contents using vector similarity.
-        Mimics cloud bucket search by scanning local files and comparing embeddings.
+        
+        NOTE: This method won't work anymore since embeddings are not stored in JSON files.
+        Embeddings are only stored in the database for PostgreSQL-based semantic search.
+        This method is kept for backwards compatibility but will return empty results.
         
         Args:
             query: The natural language search query.
             limit: Max number of results to return.
             finding_type: Optional filter by category.
         """
-        if not self.embedder or not SEMANTIC_AVAILABLE:
-            print("[Memory] Semantic search unavailable. Install 'sentence-transformers' and 'numpy'.")
-            return []
-
-        # 1. Embed the query
-        query_vec = self.embedder.encode(query)
-        results = []
-
-        # 2. Determine scan scope
-        if finding_type:
-            search_dirs = [self.findings_dir / finding_type]
-        else:
-            search_dirs = [Path(x[0]) for x in os.walk(self.findings_dir)]
-
-        # 3. Scan files and calculate similarity
-        # (For massive datasets, you'd want a vector DB, but for a local 'bucket', this is fine)
-        for directory in search_dirs:
-            if not os.path.exists(directory):
-                continue
-
-            for filename in os.listdir(directory):
-                if not filename.endswith('.json'):
-                    continue
-                
-                filepath = os.path.join(directory, filename)
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                    
-                    # Skip if no embedding exists
-                    if not data.get('embedding'):
-                        continue
-                        
-                    # Calculate Cosine Similarity
-                    doc_vec = np.array(data['embedding'])
-                    
-                    # Cosine Sim = (A . B) / (||A|| * ||B||)
-                    norm_q = np.linalg.norm(query_vec)
-                    norm_d = np.linalg.norm(doc_vec)
-                    
-                    if norm_q == 0 or norm_d == 0:
-                        score = 0
-                    else:
-                        score = np.dot(query_vec, doc_vec) / (norm_q * norm_d)
-                    
-                    results.append((score, data))
-
-                except Exception:
-                    continue
-        
-        # 4. Sort by score (Highest first) and slice
-        results.sort(key=lambda x: x[0], reverse=True)
-        
-        # Return just the data, stripping the score
-        return [r[1] for r in results[:limit]]
+        print("[Memory] Warning: JSON file-based semantic search is disabled. Embeddings are not stored in files.")
+        return []
