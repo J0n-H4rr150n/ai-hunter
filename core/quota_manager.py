@@ -115,6 +115,23 @@ class QuotaManager:
             # print(f"[Quota] {metric} +{amount} = {self.usage[metric]}")
             pass
 
+    def set_limit(self, tool_name: str, limit: int):
+        """
+        Override the default limit for a specific tool/metric.
+        
+        Args:
+            tool_name (str): The tool or metric name (e.g., 'actions', 'llm_tokens')
+            limit (int): The new limit value
+        """
+        # Store custom limits in the limits dict
+        if not hasattr(self, 'custom_limits'):
+            self.custom_limits = {}
+        
+        self.custom_limits[tool_name] = limit
+        
+        if Config.DEBUG:
+            print(f"[Quota] Set custom limit for {tool_name}: {limit}")
+
     def get_status(self):
         """Returns a summary of current usage."""
         return self.usage

@@ -292,16 +292,6 @@ async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: st
             await redis_mgr.publish_event("missions:all", event_data)
             print(f"[Mission {mission_id}] Plan published, waiting for web UI approval...")
             
-            event_data = {
-                "type": "plan_generated",
-                "mission_id": mission_id,
-                "plan": plan
-            }
-            print(f"[Mission {mission_id}] Event data: {json.dumps(event_data, indent=2)[:500]}...")
-            
-            await redis_mgr.publish_event("missions:all", event_data)
-            print(f"[Mission {mission_id}] Plan published, waiting for web UI approval...")
-            
             # Wait for approval response from queue
             approval_response = await approval_queue.get()
             approved = approval_response.get("approved", False)

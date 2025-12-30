@@ -69,10 +69,15 @@ function connectToSSE() {
     });
 
     eventSource.addEventListener('plan_generated', (event) => {
+        logToBackend('INFO', 'Received plan_generated event');
+        console.log('🎯 Received plan_generated event:', event);
         const data = JSON.parse(event.data);
+        logToBackend('DEBUG', 'Parsed plan data', { missionId: data.mission_id, hasRationale: !!data.plan?.rationale });
+        console.log('📋 Parsed plan data:', data);
         currentPlan = data.plan;
         currentMissionId = data.mission_id;
-        showPlanInFeed(data.plan, data.mission_id);
+        console.log('Calling showPlanApproval with:', { plan: data.plan, missionId: data.mission_id });
+        showPlanApproval(data.plan, data.mission_id);
     });
 
     eventSource.addEventListener('mission_status', (event) => {
@@ -128,6 +133,29 @@ function updateStatus(status, text) {
     statusText.textContent = text;
 }
 
+// Modal controls
+document.getElementById('open-mission-modal').addEventListener('click', () => {
+    document.getElementById('mission-modal').classList.remove('hidden');
+});
+
+document.getElementById('close-mission-modal').addEventListener('click', () => {
+    document.getElementById('mission-modal').classList.add('hidden');
+});
+
+// Close modal when clicking outside
+document.getElementById('mission-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'mission-modal') {
+        document.getElementById('mission-modal').classList.add('hidden');
+    }
+});
+
+// Close modal on Escape key
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        document.getElementById('mission-modal').classList.add('hidden');
+    }
+});
+
 // Start a new mission
 document.getElementById('start-mission-btn').addEventListener('click', async () => {
     const targetUrl = document.getElementById('target-url').value;
@@ -140,13 +168,20 @@ document.getElementById('start-mission-btn').addEventListener('click', async () 
 
     console.log('🚀 Starting mission:', { targetUrl, instructions });
 
+    // Close modal and clear form immediately
+    document.getElementById('mission-modal').classList.add('hidden');
+    const savedUrl = targetUrl;
+    const savedInstructions = instructions;
+    document.getElementById('target-url').value = '';
+    document.getElementById('instructions').value = '';
+
     try {
         const response = await fetch(`${BACKEND_URL}/api/missions/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                target_url: targetUrl,
-                instructions: instructions || null
+                target_url: savedUrl,
+                instructions: savedInstructions || null
             })
         });
 
@@ -155,13 +190,16 @@ document.getElementById('start-mission-btn').addEventListener('click', async () 
         currentMissionId = data.mission_id;
 
         addToFeed({
-            message: `🚀 Mission started: ${targetUrl}`,
+            message: `🚀 Mission started: ${savedUrl}`,
             timestamp: new Date().toISOString()
         });
 
     } catch (error) {
         console.error('Failed to start mission:', error);
-        alert('Failed to start mission. Is the backend running?');
+        addToFeed({
+            message: '❌ Failed to start mission. Is the backend running?',
+            timestamp: new Date().toISOString()
+        });
     }
 });
 
@@ -225,7 +263,9 @@ function showPlanApproval(plan, missionId) {
     `;
     
     console.log('📝 Plan HTML generated, inserting into feed...');
-    feedContent.insertBefore(planEntry, feedContent.firstChild);
+    // Append to end and auto-scroll
+    feedContent.appendChild(planEntry);
+    feedContent.scrollTop = feedContent.scrollHeight;
     logToBackend('INFO', 'Plan inserted into feed successfully', { missionId: missionId });
     console.log('✅ Plan inserted into feed successfully');
 }
@@ -287,115 +327,10 @@ window.editPlanInline = function(missionId) {
     showPlanApproval(currentPlan, missionId);
 };
 
-// OLD MODAL VERSION (keeping functions for now but they won't be displayed)
-function showPlanApprovalOLD(plan, missionId) {
-    currentPlan = plan;
-    currentMissionId = missionId;
-
-    const planDisplay = document.getElementById('plan-display');
-    planDisplay.innerHTML = `
-        <div class="bg-gray-700 p-4 rounded-lg">
-            <h3 class="font-semibold text-blue-300 mb-2">🧠 Rationale</h3>
-            <p class="text-gray-300">${plan.rationale || 'No rationale provided'}</p>
-        </div>
-        
-        <div class="bg-gray-700 p-4 rounded-lg">
-            <h3 class="font-semibold text-green-300 mb-2">📝 Execution Steps</h3>
-            <pre class="text-gray-300 whitespace-pre-wrap">${plan.steps || 'No steps provided'}</pre>
-        </div>
-        
-        ${plan.budgets ? `
-        <div class="bg-gray-700 p-4 rounded-lg">
-            <h3 class="font-semibold text-purple-300 mb-2">💰 Resource Budgets</h3>
-            <ul class="text-gray-300 space-y-1">
-                ${Object.entries(plan.budgets).map(([tool, count]) =>
-        `<li>• ${tool}: ${count}</li>`
-    ).join('')}
-            </ul>
-        </div>
-        ` : ''}
-    `;
-
-    document.getElementById('plan-approval').classList.remove('hidden');
-    document.getElementById('mission-control').classList.add('opacity-50', 'pointer-events-none');
-}
-
-// Approve plan
-document.getElementById('approve-btn').addEventListener('click', async () => {
-    if (!currentMissionId) return;
-
-    try {
-        await fetch(`${BACKEND_URL}/api/missions/${currentMissionId}/approve`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ plan: currentPlan })
-        });
-
-        hidePlanApproval();
-        addToFeed({
-            message: '✅ Plan approved - Execution starting...',
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('Failed to approve plan:', error);
-    }
-});
-
-// Reject plan
-document.getElementById('reject-btn').addEventListener('click', async () => {
-    if (!currentMissionId) return;
-
-    try {
-        await fetch(`${BACKEND_URL}/api/missions/${currentMissionId}/reject`, {
-            method: 'POST'
-        });
-
-        hidePlanApproval();
-        addToFeed({
-            message: '❌ Plan rejected - Mission aborted',
-            timestamp: new Date().toISOString()
-        });
-
-        currentMissionId = null;
-
-    } catch (error) {
-        console.error('Failed to reject plan:', error);
-    }
-});
-
-// Edit plan (simple version)
-document.getElementById('edit-btn').addEventListener('click', () => {
-    const newRationale = prompt('Edit Rationale:', currentPlan.rationale);
-    if (newRationale !== null) {
-        currentPlan.rationale = newRationale;
-    }
-
-    const newSteps = prompt('Edit Steps:', currentPlan.steps);
-    if (newSteps !== null) {
-        currentPlan.steps = newSteps;
-    }
-
-    // Refresh display
-    showPlanApproval(currentPlan, currentMissionId);
-});
-
-// Hide plan approval
-function hidePlanApproval() {
-    document.getElementById('plan-approval').classList.add('hidden');
-    document.getElementById('mission-control').classList.remove('opacity-50', 'pointer-events-none');
-}
-
-// Update mission status
+// Update mission status (removed old modal code)
 function updateMissionStatus(data) {
-    const statusContent = document.getElementById('status-content');
-    statusContent.innerHTML = `
-        <div class="space-y-2">
-            <p><span class="font-semibold">Status:</span> ${data.status}</p>
-            <p><span class="font-semibold">Target:</span> ${data.target_url}</p>
-            ${data.current_action ? `<p><span class="font-semibold">Current Action:</span> ${data.current_action}</p>` : ''}
-        </div>
-    `;
+    // Mission status section removed from UI, just log it
+    console.log('Mission status update:', data);
 }
 
 // Add message to live feed
@@ -412,11 +347,15 @@ function addToFeed(data) {
         </div>
     `;
 
-    feedContent.insertBefore(entry, feedContent.firstChild);
+    // Append to end (oldest to newest)
+    feedContent.appendChild(entry);
+
+    // Auto-scroll to bottom
+    feedContent.scrollTop = feedContent.scrollHeight;
 
     // Keep only last 50 entries
     while (feedContent.children.length > 50) {
-        feedContent.removeChild(feedContent.lastChild);
+        feedContent.removeChild(feedContent.firstChild);
     }
 }
 

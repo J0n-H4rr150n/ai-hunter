@@ -34,7 +34,7 @@ class AutonomousLoop:
         self.ui_callback = None
         
     def log_to_ui(self, message: str):
-        \"\"\"Send log message to UI if callback is set\"\"\"
+        """Send log message to UI if callback is set"""
         if self.ui_callback:
             self.ui_callback(message)
         print(message)  # Always print to console too
