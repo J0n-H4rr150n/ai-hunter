@@ -2,10 +2,11 @@ import json
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part
 from config.safety import HARD_CAPS
+from config.config import Config
 
 class TacticalPlanner:
-    def __init__(self, project_id: str, location: str = "us-central1"):
-        vertexai.init(project=project_id, location=location)
+    def __init__(self):
+        vertexai.init(project=Config.GCP_PROJECT_ID, location=Config.GCP_LOCATION)
         self.model = GenerativeModel("gemini-2.5-pro")
         
     def generate_plan(self, goal: str, triad: dict, tech_report: dict) -> dict:
@@ -70,7 +71,7 @@ class TacticalPlanner:
             """
         ]
         
-        print("[Planner] Synthesizing Tech Stack & Visuals into Plan...")
+        # Print removed - logged by autonomous_loop instead
         try:
             response = self.model.generate_content(
                 prompt,

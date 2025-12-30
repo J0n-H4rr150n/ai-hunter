@@ -1,10 +1,11 @@
 import json
 import vertexai
 from vertexai.generative_models import GenerativeModel, SafetySetting
+from config.config import Config
 
 class FindingsAnalyst:
-    def __init__(self, project_id: str, location: str = "us-central1"):
-        vertexai.init(project=project_id, location=location)
+    def __init__(self):
+        vertexai.init(project=Config.GCP_PROJECT_ID, location=Config.GCP_LOCATION)
         
         self.model = GenerativeModel(
             "gemini-2.5-pro",

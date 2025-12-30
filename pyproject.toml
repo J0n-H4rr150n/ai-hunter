@@ -18,6 +18,19 @@ torch = {version = "^2.5.0", source = "pytorch-cpu"}
 sentence-transformers = "^3.2.0"
 # Playwright for browser automation
 playwright = "^1.49.0"
+# Google Cloud Vertex AI for Gemini LLM
+google-cloud-aiplatform = "^1.38.0"
+# FastAPI for backend API
+fastapi = "^0.104.1"
+uvicorn = {extras = ["standard"], version = "^0.24.0"}
+# PostgreSQL with async support
+asyncpg = "^0.29.0"
+# PostgreSQL sync driver for Alembic
+psycopg2-binary = "^2.9.9"
+# Redis for pub/sub and caching
+redis = {extras = ["hiredis"], version = "^5.0.0"}
+# Alembic for database migrations
+alembic = "^1.13.0"
 
 [[tool.poetry.source]]
 name = "pytorch-cpu"

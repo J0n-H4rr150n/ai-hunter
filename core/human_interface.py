@@ -53,6 +53,74 @@ class HumanInterface:
         """
         print(f"[🔔 Notification]: {message}")
 
+    def display_plan(self, plan: dict):
+        """
+        Display a generated plan in a readable format.
+        """
+        print("\n" + "="*60)
+        print("📋 GENERATED EXECUTION PLAN")
+        print("="*60)
+        
+        if "rationale" in plan:
+            print(f"\n🧠 Rationale:\n{plan['rationale']}")
+        
+        if "steps" in plan:
+            print(f"\n📝 Execution Steps:\n{plan['steps']}")
+        
+        if "budgets" in plan:
+            print(f"\n💰 Resource Budgets:")
+            for tool, count in plan['budgets'].items():
+                print(f"   - {tool}: {count}")
+        
+        print("\n" + "="*60)
+
+    def approve_plan(self, plan: dict) -> tuple[bool, dict]:
+        """
+        Ask human to approve, edit, or reject a plan.
+        
+        Returns:
+            (approved: bool, edited_plan: dict)
+        """
+        self.display_plan(plan)
+        
+        print("\n[🤖 Agent]: Do you approve this plan?")
+        print("  [y] Yes, execute as-is")
+        print("  [e] Edit the plan (opens in editor)")
+        print("  [n] No, abort mission")
+        
+        response = input("[👤 Human]: ").strip().lower()
+        
+        if response == 'y':
+            print("[✅ Approved] Plan approved. Beginning execution...")
+            return (True, plan)
+        
+        elif response == 'e':
+            print("[✏️ Edit Mode] Opening plan for editing...")
+            # For now, allow simple text edits to rationale/steps
+            print("\nEdit Rationale (or press Enter to keep):")
+            new_rationale = input().strip()
+            if new_rationale:
+                plan['rationale'] = new_rationale
+            
+            print("\nEdit Steps (or press Enter to keep):")
+            print("(Multi-line supported, type 'END' on a new line when done):")
+            new_steps_lines = []
+            while True:
+                line = input()
+                if line.strip().upper() == 'END':
+                    break
+                new_steps_lines.append(line)
+            
+            if new_steps_lines:
+                plan['steps'] = '\n'.join(new_steps_lines)
+            
+            print("\n[💾 Saved] Plan updated. Review again...")
+            return self.approve_plan(plan)  # Recursive approval
+        
+        else:
+            print("[❌ Rejected] Mission aborted by human.")
+            return (False, plan)
+
     def _open_file(self, filepath):
         """
         Opens a file using the default system application.

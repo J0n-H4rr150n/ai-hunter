@@ -2,10 +2,11 @@ import json
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part, SafetySetting
 from config.safety import truncate_context, SAFETY_LIMITS
+from config.config import Config
 
 class VertexAgent:
-    def __init__(self, project_id: str, location: str = "us-central1"):
-        vertexai.init(project=project_id, location=location)
+    def __init__(self):
+        vertexai.init(project=Config.GCP_PROJECT_ID, location=Config.GCP_LOCATION)
         
         # The agent starts with no memory or plan. 
         # These are injected by the Orchestrator at runtime.

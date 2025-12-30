@@ -1,0 +1,94 @@
+services:
+  # PostgreSQL 16 with pgvector extension
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ai-hunter-postgres
+    environment:
+      POSTGRES_DB: ai_hunter
+      POSTGRES_USER: hunter
+      POSTGRES_PASSWORD: hunter_pass_dev
+      POSTGRES_HOST_AUTH_METHOD: md5
+    ports:
+      - "33001:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hunter -d ai_hunter"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-hunter-network
+
+  # Redis for caching and real-time updates
+  redis:
+    image: redis:7-alpine
+    container_name: ai-hunter-redis
+    ports:
+      - "33002:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-hunter-network
+
+  # Backend API (Python/FastAPI)
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: ai-hunter-backend
+    environment:
+      - DATABASE_URL=postgresql://hunter:hunter_pass_dev@postgres:5432/ai_hunter
+      - REDIS_URL=redis://redis:6379
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-security-swarm-demo}
+      - GCP_LOCATION=${GCP_LOCATION:-us-central1}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json
+      - HIVE_BUCKET_PATH=/app/hive_bucket
+    ports:
+      - "33003:8000"
+    volumes:
+      - ./:/app
+      - ${APPDATA}/gcloud/application_default_credentials.json:/app/gcp-credentials.json:ro
+      - ./hive_bucket:/app/hive_bucket  # Hive bucket for screenshots, logs, etc.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ai-hunter-network
+    stdin_open: true
+    tty: true
+
+  # Frontend Web UI (Node.js + vanilla JS)
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: ai-hunter-frontend
+    environment:
+      - BACKEND_URL=http://localhost:33003
+    ports:
+      - "33004:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - ai-hunter-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  ai-hunter-network:
+    driver: bridge

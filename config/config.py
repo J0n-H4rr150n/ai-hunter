@@ -20,6 +20,11 @@ class Config:
     DEBUG = True
     keep_alive = False
 
+    # Google Cloud Platform Settings
+    # Uses Application Default Credentials from: gcloud auth application-default login
+    GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "security-swarm-demo")
+    GCP_LOCATION = os.getenv("GCP_LOCATION", "us-central1")
+
     @staticmethod
     def ensure_dirs():
         """Ensure critical directories exist."""
