@@ -1,0 +1,78 @@
+---
+# Simple Test Playbook for Initial Development
+# Used to verify playbook executor is working correctly
+
+metadata:
+  name: "Simple Test Playbook"
+  version: "1.0"
+  description: "Basic playbook for testing execution flow - no external dependencies"
+  objective: "Verify playbook/runbook execution pipeline"
+  author: "AI Hunter"
+  category: "test"
+  difficulty: "beginner"
+  estimated_duration: "5 minutes"
+  
+  tags:
+    - "test"
+    - "development"
+    - "validation"
+
+# Runbook execution sequence (only use existing, complete runbooks)
+sequence:
+  - runbook: "init_runbook"
+    stage: 1
+    name: "Initial Reconnaissance"
+    required: true
+    description: "Gather information about target application"
+    hitl_checkpoint: false  # Auto-proceed
+    on_complete:
+      action: "proceed"
+    on_failure:
+      action: "abort"
+
+# No conditional steps for simple test
+conditional_steps: []
+
+# No HITL checkpoints for simple test
+hitl_checkpoints: []
+
+# Playbook-level configuration
+configuration:
+  mission_goal: "Test playbook execution system"
+  success_metrics:
+    - "init_runbook completes successfully"
+    - "Findings aggregated correctly"
+    - "Execution status tracked"
+  
+  constraints:
+    max_requests_per_minute: 50
+    timeout_per_runbook: 600  # 10 minutes
+    require_auth: false
+    
+  llm_settings:
+    model: "gemini-2.5-pro"
+    temperature: 0.3
+    budget_per_runbook: 10000
+  
+  reporting:
+    generate_report_after_each_runbook: true
+    include_screenshots: true
+    proof_of_concept_required: false
+
+# Success criteria
+success_criteria:
+  required:
+    - "init_runbook completed successfully"
+  optional:
+    - "At least 5 findings logged"
+
+# Failure criteria (abort if met)
+failure_criteria:
+  - "Target unreachable or offline"
+  - "Browser initialization failed"
+
+# Expected outputs
+outputs:
+  - "Findings report from init_runbook"
+  - "Technology stack identification"
+  - "Initial attack surface map"

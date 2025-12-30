@@ -1,0 +1,63 @@
+---
+name: report_generation_test_runbook
+description: Test runbook for FindingsAggregator and ReportGenerator
+version: 1.0
+agent_mode: runbook
+steps:
+  - id: 1
+    action: compile_findings
+    description: Compile all findings from the mission
+    finding_types: null  # All types
+    limit: 100
+    outputs:
+      - compiled_data
+
+  - id: 2
+    action: pattern_search
+    description: Search for vulnerability patterns
+    pattern: "injection"
+    field: "description"
+    limit: 50
+    depends_on: [1]
+    outputs:
+      - vulnerability_matches
+
+  - id: 3
+    action: review_findings
+    description: Review and summarize all findings
+    finding_ids: null  # All findings
+    depends_on: [1]
+    outputs:
+      - review_summary
+
+  - id: 4
+    action: generate_report
+    description: Generate executive summary report
+    report_type: executive_summary
+    depends_on: [3]
+    outputs:
+      - executive_report
+
+  - id: 5
+    action: generate_report
+    description: Generate technical detailed report
+    report_type: technical
+    depends_on: [3]
+    outputs:
+      - technical_report
+
+  - id: 6
+    action: generate_report
+    description: Generate vulnerability-focused report
+    report_type: vulnerability
+    depends_on: [3]
+    outputs:
+      - vulnerability_report
+
+  - id: 7
+    action: generate_report
+    description: Generate technology inventory
+    report_type: technology_inventory
+    depends_on: [3]
+    outputs:
+      - tech_inventory

@@ -2,7 +2,7 @@ import json
 import os
 import uuid
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from config.config import Config

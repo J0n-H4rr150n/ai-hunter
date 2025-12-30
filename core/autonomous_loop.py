@@ -9,6 +9,7 @@ from tools.som_browser import SoMBrowser
 from memory.finding_repository import FindingRepository
 from core.agent_tracker import AgentTracker
 from core.quota_manager import QuotaManager
+from core.playbook_executor import PlaybookExecutor, PlaybookExecutionError
 
 class AutonomousLoop:
     """
@@ -206,6 +207,71 @@ class AutonomousLoop:
         finally:
             # 7. Always cleanup browser
             self.log_to_ui("[Auto] 🛑 Closing browser...")
+            if self.browser:
+                self.browser.close()
+                self.browser = None
+            self.tracker.set_browser(None)
+    
+    async def start_mission_with_playbook(self, playbook_name: str, goal: str, 
+                                         target_url: str, instructions: str = None):
+        """
+        New execution path using playbook/runbook system.
+        Co-exists with old tactical planner for backward compatibility.
+        
+        Args:
+            playbook_name: Name of playbook YAML file (without .yaml extension)
+            goal: Mission objective
+            target_url: Target URL to test
+            instructions: Optional user instructions
+        
+        Returns:
+            Execution summary dict
+        """
+        
+        self.log_to_ui(f"\n[Playbook] 🎯 Starting Playbook Mission: {playbook_name}")
+        self.log_to_ui(f"[Playbook] 🚀 Goal: {goal}")
+        self.log_to_ui(f"[Playbook] 🌐 Target: {target_url}")
+        
+        if instructions:
+            self.log_to_ui(f"[Playbook] 📋 User Instructions: {instructions}")
+        
+        # Initialize browser (headless mode for Docker)
+        self.log_to_ui("[Playbook] 🌐 Launching browser...")
+        self.browser = SoMBrowser(headless=True)
+        self.tracker.set_browser(self.browser)
+        
+        # Initialize playbook executor
+        playbook_executor = PlaybookExecutor(self, self.db)
+        
+        try:
+            # Execute playbook
+            result = await playbook_executor.execute_playbook(
+                playbook_name=playbook_name,
+                goal=goal,
+                target_url=target_url,
+                mission_id=self.mission_id,
+                instructions=instructions,
+                skip_validation=False  # Always validate for safety
+            )
+            
+            # Log summary
+            self.log_to_ui(f"\n[Playbook] ✅ Playbook execution complete!")
+            self.log_to_ui(f"[Playbook] 📊 Status: {result['status']}")
+            self.log_to_ui(f"[Playbook] 📊 Runbooks completed: {len(result['completed_runbooks'])}")
+            self.log_to_ui(f"[Playbook] 📊 Total findings: {result['total_findings']}")
+            
+            if result['failed_runbooks']:
+                self.log_to_ui(f"[Playbook] ⚠️  Failed runbooks: {len(result['failed_runbooks'])}")
+            
+            return result
+            
+        except PlaybookExecutionError as e:
+            self.log_to_ui(f"[Playbook] ❌ Playbook execution failed: {e}")
+            raise
+        
+        finally:
+            # Always cleanup browser
+            self.log_to_ui("[Playbook] 🛑 Closing browser...")
             if self.browser:
                 self.browser.close()
                 self.browser = None

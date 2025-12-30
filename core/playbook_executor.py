@@ -1,0 +1,499 @@
+"""
+Playbook Executor - Orchestrates playbook → runbook → steps → tools execution
+Bridges the declarative YAML playbooks/runbooks to imperative Python execution
+"""
+
+import asyncio
+from typing import Optional, Dict, Any, List, Callable
+from datetime import datetime
+from pathlib import Path
+
+from core.playbook_manager import PlaybookManager
+from core.runbook_engine import RunbookParser, RunbookExecutor, RunbookFlowManager
+from core.state_manager import StateManager, StateScope
+from core.tool_mapper import ToolMapper, ToolMapperError
+from memory.finding_repository import FindingRepository
+
+
+class PlaybookExecutionError(Exception):
+    """Raised when playbook execution fails critically"""
+    pass
+
+
+class RunbookExecutionError(Exception):
+    """Raised when a runbook step fails"""
+    pass
+
+
+class PlaybookExecutorContext:
+    """Execution context shared across runbook executions"""
+    
+    def __init__(self, mission_id: int, goal: str, target_url: str, 
+                 instructions: str = None):
+        self.mission_id = mission_id
+        self.goal = goal
+        self.target_url = target_url
+        self.instructions = instructions
+        self.start_time = datetime.utcnow()
+        self.playbook_name = None
+        self.execution_id = None
+        
+        # Findings aggregation
+        self.all_findings = {}  # runbook_name -> findings
+        self.finding_count = 0
+        
+        # Execution state
+        self.paused = False
+        self.abort_requested = False
+        self.completed_runbooks = []
+        self.failed_runbooks = []
+
+
+class PlaybookExecutor:
+    """
+    Executes playbooks by orchestrating runbooks and integrating with the autonomous agent.
+    
+    Responsibilities:
+    - Validate playbook before execution
+    - Execute runbooks in sequence order
+    - Handle conditional branching based on findings
+    - Manage HITL (Human-in-the-Loop) checkpoints
+    - Aggregate findings across runbooks
+    - Persist state for pause/resume
+    - Handle errors gracefully with rollback
+    """
+    
+    def __init__(self, autonomous_loop, db):
+        """
+        Args:
+            autonomous_loop: AutonomousLoop instance (provides access to tools, browser, agent)
+            db: Database instance for persistence
+        """
+        self.loop = autonomous_loop
+        self.db = db
+        
+        # Core components
+        self.manager = PlaybookManager()
+        self.runbook_parser = RunbookParser()
+        self.flow_manager = RunbookFlowManager(self.runbook_parser)
+        self.state_manager = StateManager(db)
+        self.finding_repo = autonomous_loop.repo
+        
+        # Tool mapper for action execution
+        self.tool_mapper = ToolMapper(
+            browser=autonomous_loop.browser if hasattr(autonomous_loop, 'browser') else None,
+            scanner=autonomous_loop.scanner if hasattr(autonomous_loop, 'scanner') else None,
+            fuzzer=autonomous_loop.fuzzer if hasattr(autonomous_loop, 'fuzzer') else None,
+            repo=autonomous_loop.repo
+        )
+        
+        # Execution context
+        self.context: Optional[PlaybookExecutorContext] = None
+        self.current_runbook_executor: Optional[RunbookExecutor] = None
+        
+    def _log(self, message: str, screenshot: dict = None):
+        """Log to UI and console"""
+        if self.loop and self.loop.ui_callback:
+            self.loop.log_to_ui(message, screenshot)
+        else:
+            print(message)
+    
+    async def execute_playbook(self, playbook_name: str, goal: str, 
+                              target_url: str, mission_id: int,
+                              instructions: str = None,
+                              skip_validation: bool = False) -> Dict[str, Any]:
+        """
+        Main entry point for playbook execution.
+        
+        Args:
+            playbook_name: Name of playbook YAML file (without .yaml)
+            goal: Mission objective
+            target_url: Target URL to test
+            mission_id: Database mission ID
+            instructions: Optional user instructions
+            skip_validation: Skip pre-flight validation (NOT RECOMMENDED)
+        
+        Returns:
+            Execution summary with findings and status
+        
+        Raises:
+            PlaybookExecutionError: If validation fails or critical error occurs
+        """
+        
+        # Initialize context
+        self.context = PlaybookExecutorContext(mission_id, goal, target_url, instructions)
+        self.context.playbook_name = playbook_name
+        
+        self._log(f"[Playbook] 🎯 Starting Playbook: {playbook_name}")
+        self._log(f"[Playbook] 🚀 Goal: {goal}")
+        self._log(f"[Playbook] 🌐 Target: {target_url}")
+        
+        try:
+            # STEP 1: Validation
+            if not skip_validation:
+                self._log("[Playbook] ✔️  Validating playbook structure...")
+                validation_result = self.manager.validate_playbook_preflight(playbook_name)
+                
+                if not validation_result.is_valid():
+                    error_msg = f"Playbook validation failed:\n{validation_result.summary()}"
+                    self._log(f"[Playbook] ❌ {error_msg}")
+                    raise PlaybookExecutionError(error_msg)
+                
+                if validation_result.has_warnings():
+                    for warning in validation_result.get_warnings():
+                        self._log(f"[Playbook] ⚠️  {warning.message}")
+            
+            # STEP 2: Start playbook
+            self._log("[Playbook] 📋 Loading playbook configuration...")
+            playbook_info = self.manager.start_playbook(playbook_name, goal, skip_validation=True)
+            
+            total_stages = playbook_info['total_stages']
+            self._log(f"[Playbook] 📊 Total stages: {total_stages}")
+            
+            # STEP 3: Create execution record in database
+            self.context.execution_id = await self._create_playbook_execution_record(
+                playbook_name, playbook_info
+            )
+            
+            # STEP 4: Execute runbooks in sequence
+            self._log("[Playbook] 🔄 Beginning runbook execution sequence...")
+            
+            stage_num = 0
+            while True:
+                stage_num += 1
+                
+                # Check for pause/abort
+                if self.context.paused:
+                    self._log("[Playbook] ⏸️  Execution paused")
+                    await self._update_execution_status('paused')
+                    return self._build_execution_summary('paused')
+                
+                if self.context.abort_requested:
+                    self._log("[Playbook] 🛑 Execution aborted by user")
+                    await self._update_execution_status('aborted')
+                    return self._build_execution_summary('aborted')
+                
+                # Get next runbook
+                next_runbook = self.manager.get_next_runbook(
+                    current_findings=self.context.all_findings
+                )
+                
+                if not next_runbook:
+                    self._log("[Playbook] ✅ All runbooks completed!")
+                    break
+                
+                runbook_name = next_runbook['runbook']
+                stage = next_runbook['stage']
+                
+                self._log(f"\n[Playbook] 📍 Stage {stage}/{total_stages}: {next_runbook.get('name', runbook_name)}")
+                
+                # HITL Checkpoint
+                if next_runbook.get('hitl_checkpoint', False):
+                    self._log(f"[Playbook] 🚦 HITL Checkpoint before: {runbook_name}")
+                    
+                    approval = await self._request_hitl_checkpoint_approval(next_runbook)
+                    
+                    if not approval['approved']:
+                        if approval.get('action') == 'abort':
+                            self._log("[Playbook] 🛑 User aborted at checkpoint")
+                            self.context.abort_requested = True
+                            continue
+                        elif approval.get('action') == 'skip':
+                            self._log(f"[Playbook] ⏭️  User skipped runbook: {runbook_name}")
+                            self.manager.complete_stage(stage, {'skipped': True})
+                            continue
+                
+                # Execute runbook
+                try:
+                    findings = await self._execute_runbook(runbook_name, stage)
+                    
+                    # Record completion
+                    self.manager.complete_stage(stage, findings)
+                    self.flow_manager.record_runbook_completion(runbook_name, findings)
+                    self.context.completed_runbooks.append(runbook_name)
+                    self.context.all_findings[runbook_name] = findings
+                    
+                    self._log(f"[Playbook] ✅ Stage {stage} complete: {runbook_name}")
+                    
+                except RunbookExecutionError as e:
+                    self._log(f"[Playbook] ❌ Runbook failed: {runbook_name} - {e}")
+                    self.context.failed_runbooks.append({
+                        'runbook': runbook_name,
+                        'error': str(e)
+                    })
+                    
+                    # Check if this runbook was required
+                    if next_runbook.get('required', True):
+                        raise PlaybookExecutionError(f"Required runbook failed: {runbook_name}")
+                    else:
+                        self._log(f"[Playbook] ⚠️  Optional runbook failed, continuing...")
+            
+            # STEP 5: Playbook complete
+            await self._update_execution_status('completed')
+            
+            # Check success criteria
+            is_successful = self.manager.is_playbook_complete()
+            
+            if is_successful:
+                self._log("[Playbook] 🎉 Playbook execution SUCCESSFUL!")
+            else:
+                self._log("[Playbook] ⚠️  Playbook completed with some stages incomplete")
+            
+            # STEP 6: Final summary
+            summary = self._build_execution_summary('completed')
+            self._log(f"[Playbook] 📊 Total findings: {self.context.finding_count}")
+            self._log(f"[Playbook] 📊 Runbooks completed: {len(self.context.completed_runbooks)}")
+            
+            return summary
+            
+        except PlaybookExecutionError as e:
+            self._log(f"[Playbook] ❌ CRITICAL ERROR: {e}")
+            await self._update_execution_status('failed')
+            raise
+        
+        except Exception as e:
+            self._log(f"[Playbook] ❌ UNEXPECTED ERROR: {e}")
+            await self._update_execution_status('failed')
+            raise PlaybookExecutionError(f"Unexpected error during playbook execution: {e}")
+    
+    async def _execute_runbook(self, runbook_name: str, stage: int) -> Dict[str, Any]:
+        """
+        Execute a single runbook and return aggregated findings.
+        
+        Args:
+            runbook_name: Name of runbook to execute
+            stage: Stage number in playbook sequence
+        
+        Returns:
+            Dict of findings from all runbook steps
+        
+        Raises:
+            RunbookExecutionError: If runbook execution fails
+        """
+        
+        self._log(f"[Runbook] 🔧 Loading runbook: {runbook_name}")
+        
+        try:
+            # Load runbook
+            runbook = self.runbook_parser.load_runbook(runbook_name)
+            
+            # Create runbook executor
+            self.current_runbook_executor = RunbookExecutor(runbook, self.finding_repo)
+            
+            # Get steps in dependency order
+            ordered_steps = self.runbook_parser.get_steps_in_order(runbook)
+            
+            self._log(f"[Runbook] 📋 Steps to execute: {len(ordered_steps)}")
+            
+            # Create runbook execution record
+            runbook_exec_id = await self._create_runbook_execution_record(
+                runbook_name, stage
+            )
+            
+            # Execute each step
+            for i, step in enumerate(ordered_steps, 1):
+                step_id = step['id']
+                step_name = step['name']
+                
+                self._log(f"[Runbook] 📍 Step {i}/{len(ordered_steps)}: {step_name}")
+                
+                # Check dependencies
+                depends_on = step.get('depends_on', [])
+                if not all(dep in self.current_runbook_executor.completed_steps for dep in depends_on):
+                    missing = [d for d in depends_on if d not in self.current_runbook_executor.completed_steps]
+                    raise RunbookExecutionError(f"Step {step_id} dependencies not met: {missing}")
+                
+                # Execute step
+                try:
+                    step_findings = await self._execute_step(step, runbook)
+                    
+                    # Record findings
+                    self.current_runbook_executor.record_step_findings(step_id, step_findings)
+                    self.context.finding_count += len(step_findings)
+                    
+                    self._log(f"[Runbook] ✅ Step complete: {step_name}")
+                    
+                except Exception as e:
+                    self._log(f"[Runbook] ❌ Step failed: {step_name} - {e}")
+                    raise RunbookExecutionError(f"Step '{step_name}' failed: {e}")
+            
+            # Get all findings from runbook
+            all_findings = self.current_runbook_executor.get_all_findings()
+            
+            # Update database
+            await self._update_runbook_execution_record(runbook_exec_id, 'completed', all_findings)
+            
+            self._log(f"[Runbook] ✅ Runbook complete: {runbook_name}")
+            
+            return all_findings
+            
+        except Exception as e:
+            if hasattr(self, 'current_runbook_executor') and self.current_runbook_executor:
+                await self._update_runbook_execution_record(
+                    runbook_exec_id, 'failed', 
+                    {'error': str(e)}
+                )
+            raise RunbookExecutionError(f"Runbook '{runbook_name}' failed: {e}")
+    
+    async def _execute_step(self, step: dict, runbook: dict) -> Dict[str, Any]:
+        """
+        Execute a single runbook step using ToolMapper.
+        
+        Args:
+            step: Step definition from runbook
+            runbook: Full runbook context
+        
+        Returns:
+            Dict of findings from this step
+        """
+        
+        action = step['action']
+        tool_name = step.get('tool', 'unknown')
+        
+        self._log(f"[Step] 🔨 Action: {action}, Tool: {tool_name}")
+        
+        # Update tool mapper with latest browser reference
+        if self.loop.browser:
+            self.tool_mapper.set_browser(self.loop.browser)
+        
+        # Build execution context
+        execution_context = {
+            'mission_id': self.context.mission_id,
+            'goal': self.context.goal,
+            'target_url': self.context.target_url,
+            'playbook_name': self.context.playbook_name,
+            'runbook_name': runbook['metadata']['name'],
+            'step_id': step['id']
+        }
+        
+        try:
+            # Execute action using ToolMapper
+            findings = self.tool_mapper.execute_action(action, step, execution_context)
+            
+            # Validate findings match expected schema (optional)
+            expected_findings = step.get('findings_to_log', [])
+            if expected_findings:
+                self._log(f"[Step] 📊 Expected {len(expected_findings)} findings, got {len(findings)} actual")
+            
+            return findings
+            
+        except ToolMapperError as e:
+            self._log(f"[Step] ⚠️  Tool mapping error: {e}")
+            # Return error findings instead of failing
+            return {
+                '_error': str(e),
+                '_step_id': step['id'],
+                '_action': action,
+                '_failed': True
+            }
+        
+        except Exception as e:
+            self._log(f"[Step] ❌ Unexpected error: {e}")
+            raise
+    
+    async def _request_hitl_checkpoint_approval(self, runbook_info: dict) -> Dict[str, Any]:
+        """
+        Request human approval at a HITL checkpoint.
+        
+        Args:
+            runbook_info: Runbook information from playbook sequence
+        
+        Returns:
+            Dict with approval status and optional action
+        """
+        
+        # TODO: Phase 5 - Implement actual HITL UI integration
+        # For now, auto-approve if no callback is set
+        
+        if not self.loop.tool_approval_callback:
+            self._log("[HITL] No approval callback set, auto-approving checkpoint")
+            return {'approved': True, 'action': 'continue'}
+        
+        # Build approval request
+        approval_request = {
+            'type': 'hitl_checkpoint',
+            'runbook': runbook_info['runbook'],
+            'stage': runbook_info['stage'],
+            'name': runbook_info.get('name', ''),
+            'description': runbook_info.get('description', ''),
+            'current_findings': self.context.all_findings,
+            'completed_runbooks': self.context.completed_runbooks
+        }
+        
+        # Request approval (blocks until response)
+        approval = self.loop.tool_approval_callback(
+            'hitl_checkpoint', 
+            approval_request,
+            {'mission_id': self.context.mission_id}
+        )
+        
+        return approval
+    
+    async def _create_playbook_execution_record(self, playbook_name: str, 
+                                               playbook_info: dict) -> int:
+        """Create database record for playbook execution"""
+        
+        # TODO: Phase 1, Task 1.3 - Implement database schema
+        # For now, return placeholder ID
+        return 1
+    
+    async def _create_runbook_execution_record(self, runbook_name: str, stage: int) -> int:
+        """Create database record for runbook execution"""
+        
+        # TODO: Phase 1, Task 1.3 - Implement database schema
+        return 1
+    
+    async def _update_execution_status(self, status: str):
+        """Update playbook execution status in database"""
+        
+        # TODO: Phase 1, Task 1.3 - Implement database updates
+        pass
+    
+    async def _update_runbook_execution_record(self, runbook_exec_id: int, 
+                                              status: str, findings: Dict):
+        """Update runbook execution record"""
+        
+        # TODO: Phase 1, Task 1.3 - Implement database updates
+        pass
+    
+    def _build_execution_summary(self, status: str) -> Dict[str, Any]:
+        """Build final execution summary"""
+        
+        duration = (datetime.utcnow() - self.context.start_time).total_seconds()
+        
+        return {
+            'status': status,
+            'playbook_name': self.context.playbook_name,
+            'mission_id': self.context.mission_id,
+            'goal': self.context.goal,
+            'target_url': self.context.target_url,
+            'execution_id': self.context.execution_id,
+            'duration_seconds': duration,
+            'completed_runbooks': self.context.completed_runbooks,
+            'failed_runbooks': self.context.failed_runbooks,
+            'total_findings': self.context.finding_count,
+            'all_findings': self.context.all_findings,
+            'is_success': len(self.context.failed_runbooks) == 0 and status == 'completed'
+        }
+    
+    # Pause/Resume functionality (Phase 6)
+    
+    async def pause_execution(self):
+        """Pause playbook execution at next checkpoint"""
+        self.context.paused = True
+        self._log("[Playbook] ⏸️  Pause requested")
+    
+    async def resume_execution(self):
+        """Resume paused execution"""
+        if not self.context or not self.context.paused:
+            raise PlaybookExecutionError("No paused execution to resume")
+        
+        self.context.paused = False
+        self._log("[Playbook] ▶️  Resuming execution")
+        
+        # TODO: Phase 6 - Implement checkpoint restoration
+    
+    def abort_execution(self):
+        """Request abort at next checkpoint"""
+        self.context.abort_requested = True
+        self._log("[Playbook] 🛑 Abort requested")
