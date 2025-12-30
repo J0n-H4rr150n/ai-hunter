@@ -335,7 +335,7 @@ async def start_mission(mission: MissionStart):
     repo = FindingRepository()
     quota = QuotaManager(agent_id=f"mission_{mission_id}")
     
-    auto_loop = AutonomousLoop(tracker, repo, quota)
+    auto_loop = AutonomousLoop(tracker, repo, quota, db)
     
     # Create approval queue for this mission
     approval_queue = asyncio.Queue()
@@ -653,6 +653,128 @@ async def approve_tool(approval: dict):
         
         return {"status": "ok"}
     return {"error": "Mission not found"}, 404
+
+# Mission control endpoints
+@app.post("/api/missions/{mission_id}/pause")
+async def pause_mission(mission_id: int):
+    """Request mission pause after current task"""
+    if mission_id in active_missions:
+        active_missions[mission_id]["status"] = "pausing"
+        # TODO: Implement actual pause signal to autonomous loop
+        await redis_mgr.publish_event("missions:all", {
+            "type": "mission_status",
+            "mission_id": mission_id,
+            "status": "pausing"
+        })
+        return {"status": "pausing"}
+    raise HTTPException(status_code=404, detail="Mission not found")
+
+@app.post("/api/missions/{mission_id}/resume")
+async def resume_mission(mission_id: int):
+    """Resume paused mission"""
+    if mission_id in active_missions:
+        active_missions[mission_id]["status"] = "running"
+        await redis_mgr.publish_event("missions:all", {
+            "type": "mission_status",
+            "mission_id": mission_id,
+            "status": "running"
+        })
+        return {"status": "running"}
+    raise HTTPException(status_code=404, detail="Mission not found")
+
+@app.post("/api/missions/{mission_id}/stop")
+async def stop_mission(mission_id: int):
+    """Force stop mission immediately"""
+    if mission_id in active_missions:
+        # TODO: Implement force stop
+        active_missions[mission_id]["status"] = "stopped"
+        await db.update_mission_status(mission_id, "stopped")
+        await redis_mgr.publish_event("missions:all", {
+            "type": "mission_status",
+            "mission_id": mission_id,
+            "status": "stopped"
+        })
+        return {"status": "stopped"}
+    raise HTTPException(status_code=404, detail="Mission not found")
+
+class UserMessage(BaseModel):
+    message: str
+
+@app.post("/api/missions/{mission_id}/message")
+async def send_user_message(mission_id: int, msg: UserMessage):
+    """Queue user message for agent (will pause after current task)"""
+    if mission_id in active_missions:
+        # TODO: Implement message queueing
+        await redis_mgr.publish_event("missions:all", {
+            "type": "user_message",
+            "mission_id": mission_id,
+            "message": msg.message,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        return {"status": "queued"}
+    raise HTTPException(status_code=404, detail="Mission not found")
+
+# Iteration endpoints
+@app.get("/api/missions/{mission_id}/iterations")
+async def get_iterations(mission_id: int):
+    """Get all iterations for a mission"""
+    iterations = await db.get_iterations_for_mission(mission_id)
+    return iterations
+
+@app.post("/api/missions/{mission_id}/iterations/{iteration_num}/approve")
+async def approve_iteration(mission_id: int, iteration_num: int, approval: PlanApproval):
+    """Approve iteration plan and start execution"""
+    # Get mission to find iteration
+    iterations = await db.get_iterations_for_mission(mission_id)
+    iteration = next((i for i in iterations if i['iteration_number'] == iteration_num), None)
+    
+    if not iteration:
+        raise HTTPException(status_code=404, detail="Iteration not found")
+    
+    # Update iteration status
+    await db.update_iteration_status(iteration['id'], "in_progress")
+    
+    # Notify via SSE
+    await redis_mgr.publish_event("missions:all", {
+        "type": "iteration_started",
+        "mission_id": mission_id,
+        "iteration_number": iteration_num,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
+    return {"status": "approved", "iteration_id": iteration['id']}
+
+@app.post("/api/missions/{mission_id}/replan")
+async def replan_mission(mission_id: int):
+    """Create next iteration based on previous findings"""
+    if mission_id not in active_missions:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    
+    try:
+        # Get the autonomous loop instance
+        auto_loop = active_missions[mission_id]['loop']
+        
+        # Get current iteration count
+        iterations = await db.get_iterations_for_mission(mission_id)
+        current_iteration_num = len(iterations)
+        
+        # Generate next iteration plan
+        next_iteration_id = await auto_loop.generate_next_iteration_plan(mission_id, current_iteration_num)
+        
+        # Publish event
+        await redis_mgr.publish_event("missions:all", {
+            "type": "replan_complete",
+            "mission_id": mission_id,
+            "iteration_id": next_iteration_id,
+            "iteration_number": current_iteration_num + 1,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+        return {"status": "success", "iteration_id": next_iteration_id, "iteration_number": current_iteration_num + 1}
+    except Exception as e:
+        backend_logger.error(f"Replan failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # WebSocket endpoint removed - using SSE instead
 

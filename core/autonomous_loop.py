@@ -16,10 +16,11 @@ class AutonomousLoop:
     Polls the Planner for tasks and delegates them to the appropriate Tools.
     """
 
-    def __init__(self, tracker: AgentTracker, repo: FindingRepository, quota: QuotaManager):
+    def __init__(self, tracker: AgentTracker, repo: FindingRepository, quota: QuotaManager, db=None):
         self.tracker = tracker
         self.repo = repo
         self.quota = quota
+        self.db = db  # Database for iteration management
         
         # Tools
         self.scanner = TechScanner(repo, quota)
@@ -168,7 +169,7 @@ class AutonomousLoop:
             self.tracker.set_browser(None)
             return
         
-        # 5. Apply approved/edited plan
+        # 5. Apply approved/edited plan and create Iteration 1
         workflow.approve(edited_plan)
         self.planner.set_mission(goal, target_url, instructions)
         
@@ -177,9 +178,30 @@ class AutonomousLoop:
             for tool_name, limit in edited_plan['budgets'].items():
                 self.quota.set_limit(tool_name, limit)
         
+        # Create Iteration 1 if database is available
+        iteration_id = None
+        if self.db and self.mission_id:
+            try:
+                iteration_id = await self.db.create_iteration(
+                    mission_id=self.mission_id,
+                    iteration_number=1,
+                    plan=edited_plan
+                )
+                self.log_to_ui(f"[Auto] ✅ Created Iteration 1 (ID: {iteration_id})")
+                
+                # Update iteration status to in_progress
+                await self.db.update_iteration_status(iteration_id, "in_progress")
+            except Exception as e:
+                self.log_to_ui(f"[Auto] ⚠️ Could not create iteration in DB: {e}")
+        
         try:
-            # 6. Enter Loop
-            self.run_loop()
+            # 6. Run Iteration 1
+            if iteration_id:
+                await self.run_iteration(iteration_id, edited_plan)
+            else:
+                # Fallback to old behavior if no DB
+                self.run_loop()
+            
             workflow.complete()
         finally:
             # 7. Always cleanup browser
@@ -647,4 +669,182 @@ class AutonomousLoop:
         self.log_to_ui(analysis_html)
         
         summary = f"Found {len(all_findings)} total findings, {len(critical_vulns)} critical/high severity"
-        self.planner.complete_task(task['id'], summary)
+        self.planner.complete_task(task['id'], summary)    
+    async def run_iteration(self, iteration_id: int, plan: dict):
+        """Execute a single iteration of the mission plan."""
+        self.log_to_ui(f"\n[Auto] 🔄 Starting Iteration Execution (ID: {iteration_id})")
+        
+        # Set up planner with iteration plan steps
+        if plan.get('steps'):
+            self.log_to_ui(f"[Auto] 📝 Loaded {len(plan['steps'])} steps from iteration plan")
+            # Convert plan steps to planner tasks
+            for step in plan['steps']:
+                if isinstance(step, dict):
+                    task_type = step.get('action', 'analyze')
+                    target = step.get('target', self.planner.get_mission().get('target_url'))
+                    description = step.get('description', str(step))
+                else:
+                    # Simple string step
+                    task_type = 'analyze'
+                    target = self.planner.get_mission().get('target_url')
+                    description = str(step)
+                
+                self.planner.add_task(task_type, target, description)
+        
+        # Execute the iteration using the existing run_loop
+        self.run_loop()
+        
+        # Iteration complete - generate summary
+        self.log_to_ui("\n[Auto] ✅ Iteration execution complete, generating summary...")
+        summary = await self.summarize_iteration_findings(iteration_id)
+        
+        # Update iteration status in database
+        if self.db:
+            await self.db.update_iteration_status(iteration_id, "completed", summary)
+            self.log_to_ui("[Auto] ✅ Iteration marked as completed")
+        
+        # Publish iteration_completed event for UI
+        if hasattr(self, 'mission_id'):
+            import asyncio
+            from backend.redis_manager import RedisManager
+            redis_mgr = RedisManager()
+            await redis_mgr.connect()
+            
+            # Get current iteration number
+            iteration = await self.db.get_iteration(iteration_id)
+            iteration_num = iteration.get('iteration_number', 1)
+            
+            await redis_mgr.publish_event("missions:all", {
+                "type": "iteration_completed",
+                "mission_id": self.mission_id,
+                "iteration_number": iteration_num,
+                "iteration_id": iteration_id,
+                "summary": summary,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            })
+            
+            await redis_mgr.disconnect()
+        
+        return summary
+    
+    async def summarize_iteration_findings(self, iteration_id: int) -> str:
+        """Generate a summary of findings from this iteration using LLM."""
+        self.log_to_ui("[Auto] 📊 Aggregating findings for iteration summary...")
+        
+        # Get all findings (they're tagged with mission_id in repo)
+        all_findings = self.repo.search_findings()
+        
+        # Count findings by type
+        findings_by_type = {}
+        for finding in all_findings:
+            ftype = finding.get('type', 'unknown')
+            findings_by_type[ftype] = findings_by_type.get(ftype, 0) + 1
+        
+        # Build summary prompt for LLM
+        findings_summary = f"Total findings: {len(all_findings)}\n\n"
+        findings_summary += "Breakdown by type:\n"
+        for ftype, count in sorted(findings_by_type.items(), key=lambda x: x[1], reverse=True):
+            findings_summary += f"- {ftype}: {count}\n"
+        
+        # Add details for critical findings
+        critical = [f for f in all_findings if f.get('type') in ['xss_potential', 'error_disclosure', 'vulnerability']]
+        if critical:
+            findings_summary += f"\nCritical findings ({len(critical)}):\n"
+            for f in critical[:5]:  # First 5
+                findings_summary += f"- {f.get('type')}: {str(f.get('content', {}))[:100]}\n"
+        
+        # Use TacticalPlanner to generate summary
+        try:
+            from agents.planner import TacticalPlanner
+            planner = TacticalPlanner()
+            
+            prompt = f"""
+            Summarize the findings from this security testing iteration:
+            
+            {findings_summary}
+            
+            Provide a concise summary covering:
+            1. What was discovered
+            2. Any vulnerabilities or issues found
+            3. What didn't work or was blocked
+            4. Suggested focus areas for the next iteration
+            
+            Keep it under 300 words.
+            """
+            
+            summary = planner._call_llm(prompt)
+            self.log_to_ui("[Auto] ✅ Summary generated")
+            return summary
+            
+        except Exception as e:
+            self.log_to_ui(f"[Auto] ⚠️ Could not generate LLM summary: {e}")
+            # Fallback to basic summary
+            return findings_summary
+    
+    async def generate_next_iteration_plan(self, mission_id: int, current_iteration_num: int) -> int:
+        """Generate and create the next iteration based on all previous findings."""
+        self.log_to_ui(f"\n[Auto] 🔄 Generating Iteration {current_iteration_num + 1} plan...")
+        
+        if not self.db:
+            raise Exception("Database required for iteration planning")
+        
+        # Get all previous iteration summaries
+        all_summaries = await self.db.get_all_iteration_summaries(mission_id)
+        
+        # Get mission details
+       mission = await self.db.get_mission(mission_id)
+        target_url = mission.get('target_url')
+        instructions = mission.get('instructions')
+        
+        # Generate new plan with LLM
+        try:
+            from agents.planner import TacticalPlanner
+            planner = TacticalPlanner()
+            
+            # Get current page snapshot if browser is available
+            triad = None
+            if self.browser:
+                try:
+                    triad = self.browser.get_snapshot_triad()
+                except:
+                    pass
+            
+            prompt = f"""
+            Mission: Security testing of {target_url}
+            Instructions: {instructions}
+            
+            Previous Iterations Summary:
+            {all_summaries}
+            
+            Current status: Iteration {current_iteration_num} complete.
+            
+            Create Iteration {current_iteration_num + 1} plan:
+            - Focus on unexplored areas based on findings
+            - Address any blockers from previous iterations
+            - Try different approaches if previous methods failed
+            - Prioritize finding sensitive data, credentials, or vulnerabilities
+            - Don't repeat exact same tests that already failed
+            
+            Generate a tactical plan with specific steps.
+            """
+            
+            new_plan = planner.generate_plan(
+                goal=f"Iteration {current_iteration_num + 1}: Continue security testing",
+                triad=triad,
+                tech_report={},
+                context=prompt
+            )
+            
+            # Create new iteration in database
+            next_iteration_id = await self.db.create_iteration(
+                mission_id=mission_id,
+                iteration_number=current_iteration_num + 1,
+                plan=new_plan
+            )
+            
+            self.log_to_ui(f"[Auto] ✅ Created Iteration {current_iteration_num + 1} (ID: {next_iteration_id})")
+            return next_iteration_id
+            
+        except Exception as e:
+            self.log_to_ui(f"[Auto] ❌ Failed to generate next iteration: {e}")
+            raise

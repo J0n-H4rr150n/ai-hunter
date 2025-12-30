@@ -53,9 +53,6 @@ class FindingRepository:
         if not os.path.exists(self.findings_dir):
             os.makedirs(self.findings_dir, exist_ok=True)
 
-    def save_finding(self, content: Any, finding_type: str = "general", source: str = None, tags: List[str] = None) -> str:
-        """
-        Saves a new finding to the hive bucket immediately.
     def save_finding(
         self, 
         content: Any, 

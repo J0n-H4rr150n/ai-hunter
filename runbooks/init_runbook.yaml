@@ -1,0 +1,193 @@
+---
+# Initial Reconnaissance Runbook
+# This runbook defines the initial reconnaissance steps for a new target
+
+metadata:
+  name: "Initial Reconnaissance"
+  version: "1.0"
+  description: "Comprehensive initial information gathering for web application security testing"
+  author: "AI Hunter"
+  
+# Main reconnaissance workflow
+steps:
+  - id: "nav_target"
+    name: "Navigate to Target"
+    action: "navigate"
+    description: "Open target URL in browser using SoM Browser"
+    tool: "som_browser"
+    outputs:
+      - "screenshot_path"
+      - "page_loaded"
+    
+  - id: "capture_som"
+    name: "Capture Set-of-Marks"
+    action: "capture_screenshot"
+    description: "Take screenshot with interactive element markers (Set-of-Marks)"
+    tool: "som_browser"
+    depends_on: ["nav_target"]
+    outputs:
+      - "som_screenshot"
+      - "interactive_elements"
+    findings_to_log:
+      - "Number of interactive elements"
+      - "Types of elements (buttons, inputs, links, forms)"
+      - "Element IDs and labels"
+  
+  - id: "analyze_html_source"
+    name: "Analyze HTML Source"
+    action: "view_source"
+    description: "Extract and analyze static HTML source code"
+    tool: "som_browser"
+    depends_on: ["nav_target"]
+    findings_to_log:
+      - "HTML structure"
+      - "Meta tags"
+      - "Script tags and sources"
+      - "Comments in source"
+      - "Hidden fields"
+      - "Form actions and methods"
+  
+  - id: "analyze_dom"
+    name: "Analyze DOM After JS Load"
+    action: "inspect_dom"
+    description: "Review dynamic DOM content after JavaScript execution"
+    tool: "som_browser"
+    depends_on: ["nav_target"]
+    findings_to_log:
+      - "Dynamically added elements"
+      - "Client-side rendered content"
+      - "Shadow DOM elements"
+      - "Data attributes"
+  
+  - id: "extract_url_params"
+    name: "Extract URL Parameters"
+    action: "parse_url"
+    description: "Parse current URL and extract query parameters"
+    tool: "url_parser"
+    depends_on: ["nav_target"]
+    findings_to_log:
+      - "Query parameters and values"
+      - "URL structure"
+      - "Potential injection points"
+  
+  - id: "capture_network_traffic"
+    name: "Capture Network Traffic"
+    action: "monitor_network"
+    description: "Monitor network tab and extract API calls, resources loaded"
+    tool: "som_browser"
+    depends_on: ["nav_target"]
+    findings_to_log:
+      - "All unique URLs requested"
+      - "API endpoints discovered"
+      - "Parameters in network requests"
+      - "Request methods (GET, POST, etc)"
+      - "Response status codes"
+      - "File types loaded (JS, CSS, images, fonts)"
+  
+  - id: "analyze_headers"
+    name: "Analyze HTTP Headers"
+    action: "inspect_headers"
+    description: "Extract and analyze request/response headers"
+    tool: "som_browser"
+    depends_on: ["nav_target"]
+    findings_to_log:
+      - "Server header"
+      - "X-Powered-By header"
+      - "Security headers (CSP, HSTS, X-Frame-Options, etc)"
+      - "Custom headers"
+      - "Cache-Control directives"
+      - "CORS headers"
+  
+  - id: "extract_cookies"
+    name: "Extract Cookies"
+    action: "inspect_cookies"
+    description: "Extract and analyze all cookies"
+    tool: "som_browser"
+    depends_on: ["nav_target"]
+    findings_to_log:
+      - "Cookie names and values"
+      - "Cookie flags (HttpOnly, Secure, SameSite)"
+      - "Session cookies vs persistent"
+      - "Third-party cookies"
+  
+  - id: "extract_local_storage"
+    name: "Extract Local Storage"
+    action: "inspect_storage"
+    storage_type: "localStorage"
+    description: "Extract data from browser local storage"
+    tool: "som_browser"
+    depends_on: ["nav_target"]
+    findings_to_log:
+      - "LocalStorage keys and values"
+      - "Sensitive data in storage"
+      - "JWT tokens or credentials"
+  
+  - id: "extract_session_storage"
+    name: "Extract Session Storage"
+    action: "inspect_storage"
+    storage_type: "sessionStorage"
+    description: "Extract data from browser session storage"
+    tool: "som_browser"
+    depends_on: ["nav_target"]
+    findings_to_log:
+      - "SessionStorage keys and values"
+      - "Temporary session data"
+  
+  - id: "review_application_cache"
+    name: "Review Application Cache"
+    action: "inspect_storage"
+    storage_type: "cache"
+    description: "Review cached application data and service workers"
+    tool: "som_browser"
+    depends_on: ["nav_target"]
+    findings_to_log:
+      - "Cached resources"
+      - "Service worker status"
+      - "IndexedDB data"
+  
+  - id: "capture_console_logs"
+    name: "Capture Console Logs"
+    action: "read_console"
+    description: "Extract and analyze browser console output"
+    tool: "som_browser"
+    depends_on: ["nav_target"]
+    findings_to_log:
+      - "Console errors"
+      - "Console warnings"
+      - "Debug messages"
+      - "API endpoints logged"
+      - "Stack traces"
+
+# Post-reconnaissance analysis
+analysis:
+  - id: "aggregate_findings"
+    name: "Aggregate All Findings"
+    description: "Compile all recon data into structured format"
+    actions:
+      - "Categorize findings by type"
+      - "Identify high-value targets (admin panels, APIs, sensitive forms)"
+      - "Flag suspicious patterns"
+      - "Document technology stack"
+  
+  - id: "generate_iteration_plan"
+    name: "Generate Iteration 1 Plan"
+    description: "Create tactical plan for first testing iteration based on reconnaissance"
+    inputs:
+      - "All findings from reconnaissance steps"
+      - "User instructions/objectives"
+      - "Target URL and context"
+    outputs:
+      - "iteration_1_plan"
+    strategy:
+      - "Prioritize high-value targets discovered"
+      - "Focus on areas with potential vulnerabilities"
+      - "Plan specific tests based on technologies identified"
+      - "Include budget estimates for each test type"
+
+# Success criteria
+success_criteria:
+  - "All reconnaissance steps completed without errors"
+  - "Minimum 5 findings logged per category"
+  - "Technology stack identified"
+  - "At least 3 potential attack surfaces discovered"
+  - "Iteration 1 plan generated with specific steps"

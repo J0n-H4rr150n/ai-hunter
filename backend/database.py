@@ -461,3 +461,113 @@ class Database:
                 """,
                 scope, scope_id
             )
+    
+    # Iteration operations
+    async def create_iteration(
+        self, 
+        mission_id: int, 
+        iteration_number: int, 
+        plan: dict
+    ) -> int:
+        """Create a new iteration for a mission"""
+        async with self.pool.acquire() as conn:
+            iteration_id = await conn.fetchval(
+                """
+                INSERT INTO iterations (mission_id, iteration_number, plan, status)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id
+                """,
+                mission_id, iteration_number, json.dumps(plan), "pending"
+            )
+            
+            # Update mission's current iteration and total count
+            await conn.execute(
+                """
+                UPDATE missions 
+                SET current_iteration_id = $1, total_iterations = $2
+                WHERE id = $3
+                """,
+                iteration_id, iteration_number, mission_id
+            )
+            
+        return iteration_id
+    
+    async def get_iteration(self, iteration_id: int) -> Optional[Dict[str, Any]]:
+        """Get iteration by ID"""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM iterations WHERE id = $1",
+                iteration_id
+            )
+            if row:
+                result = dict(row)
+                if result.get('plan'):
+                    result['plan'] = json.loads(result['plan']) if isinstance(result['plan'], str) else result['plan']
+                return result
+        return None
+    
+    async def get_iterations_for_mission(self, mission_id: int) -> List[Dict[str, Any]]:
+        """Get all iterations for a mission, ordered by iteration_number"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM iterations WHERE mission_id = $1 ORDER BY iteration_number ASC",
+                mission_id
+            )
+            results = []
+            for row in rows:
+                result = dict(row)
+                if result.get('plan'):
+                    result['plan'] = json.loads(result['plan']) if isinstance(result['plan'], str) else result['plan']
+                results.append(result)
+            return results
+    
+    async def update_iteration_status(
+        self, 
+        iteration_id: int, 
+        status: str,
+        findings_summary: Optional[str] = None
+    ):
+        """Update iteration status and optionally set findings summary"""
+        async with self.pool.acquire() as conn:
+            if status == "in_progress":
+                await conn.execute(
+                    """
+                    UPDATE iterations 
+                    SET status = $1, started_at = NOW()
+                    WHERE id = $2
+                    """,
+                    status, iteration_id
+                )
+            elif status == "completed":
+                await conn.execute(
+                    """
+                    UPDATE iterations 
+                    SET status = $1, completed_at = NOW(), findings_summary = $2
+                    WHERE id = $3
+                    """,
+                    status, findings_summary, iteration_id
+                )
+            else:
+                await conn.execute(
+                    "UPDATE iterations SET status = $1 WHERE id = $2",
+                    status, iteration_id
+                )
+    
+    async def get_all_iteration_summaries(self, mission_id: int) -> str:
+        """Get concatenated summaries of all completed iterations"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT iteration_number, findings_summary 
+                FROM iterations 
+                WHERE mission_id = $1 AND status = 'completed' AND findings_summary IS NOT NULL
+                ORDER BY iteration_number ASC
+                """,
+                mission_id
+            )
+            
+            summaries = []
+            for row in rows:
+                summaries.append(f"Iteration {row['iteration_number']}:\n{row['findings_summary']}\n")
+            
+            return "\n".join(summaries) if summaries else "No completed iterations yet."

@@ -1,0 +1,7 @@
+1. complete init_runbook.yaml
+2. Review all findings from init_runbook.yaml for any IDOR patterns
+3. If any IDOR patterns are found, create a new iteration in the plan and add the IDOR patterns to the plan for testing
+4. get the human (hitl) to review/approve the plan
+5. once the plan is approved execute the steps
+6. document all findings properly
+7. provide a summary

@@ -61,8 +61,27 @@
             padding-bottom: 0.5rem;
         }
 
-        details > *:not(summary) {
+        details>*:not(summary) {
             padding-left: 1rem;
+        }
+
+        /* Sidebar tabs */
+        .sidebar-tab {
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+
+        .sidebar-tab.active {
+            border-bottom: 2px solid rgb(59, 130, 246);
+            color: rgb(147, 197, 253);
+        }
+
+        .sidebar-tab-content {
+            display: block;
+        }
+
+        .sidebar-tab-content.hidden {
+            display: none;
         }
     </style>
 </head>
@@ -76,6 +95,10 @@
                 <h1 class="text-2xl font-bold text-blue-400">AI Hunter</h1>
             </div>
             <div class="flex items-center space-x-6">
+                <select id="mission-selector"
+                    class="bg-gray-700 text-gray-300 rounded px-3 py-1 text-sm border border-gray-600 focus:ring-2 focus:ring-blue-500">
+                    <option value="live">🔴 Live Mission</option>
+                </select>
                 <button id="open-evidence-modal" class="text-gray-400 hover:text-gray-200 transition" title="Evidence">
                     📂 Evidence
                 </button>
@@ -94,9 +117,9 @@
     </header>
 
     <!-- Main Content -->
-    <main class="container mx-auto px-6 py-4 h-screen flex flex-col" style="height: calc(100vh - 80px);">
-        <!-- Live Feed - Full Height -->
-        <section id="live-feed" class="flex-1 flex flex-col">
+    <main class="container mx-auto px-6 py-4 h-screen flex" style="height: calc(100vh - 140px);">
+        <!-- Live Feed - Takes remaining space -->
+        <section id="live-feed" class="flex-1 flex flex-col mr-4">
             <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 flex flex-col h-full">
                 <h2 class="text-xl font-semibold mb-4 text-purple-300">📡 Live Activity Feed</h2>
                 <div id="feed-content" class="space-y-2 overflow-y-auto flex-1">
@@ -104,7 +127,93 @@
                 </div>
             </div>
         </section>
+
+        <!-- Right Sidebar - Collapsible Plan Status -->
+        <aside id="plan-sidebar" class="w-80 flex-shrink-0 transition-all duration-300">
+            <div class="bg-gray-800 rounded-lg border border-gray-700 flex flex-col h-full">
+                <!-- Sidebar Header with Toggle -->
+                <div
+                    class="bg-gray-900 px-4 py-3 rounded-t-lg border-b border-gray-700 flex justify-between items-center">
+                    <div class="flex items-center space-x-2 flex-1">
+                        <button id="tab-plan"
+                            class="sidebar-tab active text-sm font-semibold text-blue-300 border-b-2 border-blue-400 px-2 py-1"
+                            onclick="switchSidebarTab('plan')">
+                            📋 Plan
+                        </button>
+                        <button id="tab-ideas"
+                            class="sidebar-tab text-sm font-semibold text-gray-400 hover:text-gray-300 px-2 py-1"
+                            onclick="switchSidebarTab('ideas')">
+                            💡 Ideas
+                        </button>
+                    </div>
+                    <button id="sidebar-toggle" class="text-gray-400 hover:text-gray-200 text-xl ml-2"
+                        onclick="togglePlanSidebar()">
+                        ◀
+                    </button>
+                </div>
+
+                <!-- Sidebar Content -->
+                <div id="sidebar-content" class="flex-1 overflow-y-auto p-4">
+                    <!-- Plan Tab Content -->
+                    <div id="plan-tab-content" class="sidebar-tab-content">
+                        <div id="plan-status-container" class="text-sm text-gray-400 text-center py-8">
+                            No active plan
+                        </div>
+                    </div>
+
+                    <!-- Ideas Tab Content -->
+                    <div id="ideas-tab-content" class="sidebar-tab-content hidden">
+                        <div id="ideas-container" class="text-sm text-gray-400 text-center py-8">
+                            No ideas suggested yet
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
     </main>
+
+    <!-- Sticky Footer - Mission Control & Chat -->
+    <footer class="fixed bottom-0 left-0 right-0 bg-gray-800 border-t border-gray-700 shadow-lg z-40">
+        <div class="container mx-auto px-6 py-3">
+            <div class="flex items-center space-x-3">
+                <!-- Mission Control Buttons -->
+                <div class="flex space-x-2 border-r border-gray-600 pr-3">
+                    <button id="pause-btn"
+                        class="px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm font-semibold rounded transition disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Pause after current task completes">
+                        ⏸️ Pause
+                    </button>
+                    <button id="resume-btn"
+                        class="px-3 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded transition disabled:opacity-50 disabled:cursor-not-allowed hidden"
+                        title="Resume mission">
+                        ▶️ Resume
+                    </button>
+                    <button id="stop-btn"
+                        class="px-3 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded transition disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Force stop - immediately terminate all tasks">
+                        ⏹️ Stop
+                    </button>
+                </div>
+
+                <!-- Chat Input -->
+                <div class="flex-1 flex items-center space-x-2">
+                    <input type="text" id="user-message-input"
+                        class="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                        placeholder="Send message to agent (will pause after current task)..." disabled>
+                    <button id="send-message-btn"
+                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled>
+                        📤 Send
+                    </button>
+                </div>
+
+                <!-- Status Indicator -->
+                <div id="mission-control-status" class="text-xs text-gray-400 min-w-24 text-right">
+                    No mission
+                </div>
+            </div>
+        </div>
+    </footer>
 
     <!-- Mission Modal -->
     <div id="mission-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center">
@@ -152,7 +261,8 @@
             <div class="flex-1 overflow-y-auto p-6 space-y-6">
                 <!-- Screenshots Section -->
                 <div>
-                    <h3 class="text-lg font-semibold text-blue-300 mb-3">📸 Screenshots (<span id="screenshot-count">0</span>)</h3>
+                    <h3 class="text-lg font-semibold text-blue-300 mb-3">📸 Screenshots (<span
+                            id="screenshot-count">0</span>)</h3>
                     <div id="evidence-screenshots" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                         <!-- Screenshots will be inserted here -->
                     </div>
@@ -160,7 +270,8 @@
 
                 <!-- Metadata Section -->
                 <div>
-                    <h3 class="text-lg font-semibold text-green-300 mb-3">📄 Metadata Files (<span id="metadata-count">0</span>)</h3>
+                    <h3 class="text-lg font-semibold text-green-300 mb-3">📄 Metadata Files (<span
+                            id="metadata-count">0</span>)</h3>
                     <div id="evidence-metadata" class="space-y-2">
                         <!-- Metadata files will be inserted here -->
                     </div>
@@ -168,7 +279,8 @@
 
                 <!-- Findings Section -->
                 <div>
-                    <h3 class="text-lg font-semibold text-yellow-300 mb-3">🔍 Findings (<span id="findings-count">0</span>)</h3>
+                    <h3 class="text-lg font-semibold text-yellow-300 mb-3">🔍 Findings (<span
+                            id="findings-count">0</span>)</h3>
                     <div id="evidence-findings" class="space-y-2">
                         <!-- Findings will be inserted here -->
                     </div>
@@ -191,10 +303,11 @@
                 <!-- HITL Section -->
                 <div class="border-b border-gray-700 pb-6">
                     <h3 class="text-lg font-semibold text-purple-300 mb-4">🤝 Human-In-The-Loop (HITL)</h3>
-                    
+
                     <div class="space-y-4">
                         <label class="flex items-center space-x-3 cursor-pointer">
-                            <input type="checkbox" id="hitl-enabled" class="w-5 h-5 rounded bg-gray-700 border-gray-600">
+                            <input type="checkbox" id="hitl-enabled"
+                                class="w-5 h-5 rounded bg-gray-700 border-gray-600">
                             <span class="text-sm">Enable HITL - Require approval for all tool calls</span>
                         </label>
 
@@ -244,8 +357,8 @@
         </div>
     </div>
 
-    <!-- SSE Client Script -->
-    <script src="app.js"></script>
+    <!-- Main Application (ES6 Modules) -->
+    <script type="module" src="js/main.js"></script>
 </body>
 
 </html>
