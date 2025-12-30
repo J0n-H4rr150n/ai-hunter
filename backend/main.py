@@ -72,16 +72,21 @@ db = Database()
 redis_mgr = RedisManager()
 active_missions = {}
 plan_approval_queues = {}  # mission_id -> asyncio.Queue for plan approvals
+tool_approval_queues = {}  # mission_id -> asyncio.Queue for tool approvals (HITL)
 
 # Helper function to publish mission updates
-async def publish_mission_update(mission_id: int, message: str, event_type: str = "mission_log"):
+async def publish_mission_update(mission_id: int, message: str, event_type: str = "mission_log", screenshot: dict = None):
     """Publish a mission update to the UI"""
-    await redis_mgr.publish_event("missions:all", {
+    event_data = {
         "type": event_type,
         "mission_id": mission_id,
         "message": message,
         "timestamp": datetime.utcnow().isoformat()
-    })
+    }
+    if screenshot:
+        event_data["screenshot"] = screenshot
+    
+    await redis_mgr.publish_event("missions:all", event_data)
 
 # Utility function for Docker networking
 def transform_url_for_docker(url: str) -> str:
@@ -232,6 +237,10 @@ async def start_mission(mission: MissionStart):
     approval_queue = asyncio.Queue()
     plan_approval_queues[mission_id] = approval_queue
     
+    # Create tool approval queue for HITL
+    tool_approval_queue = asyncio.Queue()
+    tool_approval_queues[mission_id] = tool_approval_queue
+    
     # Store in active missions
     active_missions[mission_id] = {
         "loop": auto_loop,
@@ -239,11 +248,12 @@ async def start_mission(mission: MissionStart):
         "repo": repo,
         "quota": quota,
         "status": "planning",
-        "approval_queue": approval_queue
+        "approval_queue": approval_queue,
+        "tool_approval_queue": tool_approval_queue
     }
     
     # Start mission asynchronously (will pause at approval gate)
-    asyncio.create_task(run_mission(mission_id, auto_loop, target_url, mission.instructions, approval_queue))
+    asyncio.create_task(run_mission(mission_id, auto_loop, target_url, mission.instructions, approval_queue, tool_approval_queue))
     
     # Publish mission started event
     await publish_mission_update(mission_id, f"🚀 Mission started: {target_url}", "mission_started")
@@ -254,17 +264,24 @@ async def start_mission(mission: MissionStart):
         "message": "Mission started, generating plan..."
     }
 
-async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: str, instructions: Optional[str], approval_queue: asyncio.Queue):
+async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: str, instructions: Optional[str], approval_queue: asyncio.Queue, tool_approval_queue: asyncio.Queue):
     """Run the mission loop (async wrapper)"""
     try:
         # Get reference to the current event loop
         main_loop = asyncio.get_event_loop()
         
+        # Load settings for this mission
+        settings = await db.get_settings(mission_id)
+        hitl_enabled = settings.get('hitl_enabled', {}).get('enabled', False) if isinstance(settings.get('hitl_enabled'), dict) else settings.get('hitl_enabled', False)
+        auto_approve_tools = settings.get('auto_approve_tools', ['view_raw_source', 'view_dom', 'check_network'])
+        
+        backend_logger.info(f"[Mission {mission_id}] HITL enabled: {hitl_enabled}, Auto-approve: {auto_approve_tools}")
+        
         # Set up UI callback to publish logs in real-time
-        def ui_log_callback(message: str):
+        def ui_log_callback(message: str, screenshot: dict = None):
             # All messages from log_to_ui get published
             asyncio.run_coroutine_threadsafe(
-                publish_mission_update(mission_id, message),
+                publish_mission_update(mission_id, message, "mission_log", screenshot),
                 main_loop
             )
         
@@ -307,6 +324,60 @@ async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: st
         
         # Inject the synchronous callback into auto_loop
         auto_loop.web_approval_callback = sync_web_approval
+        
+        # Tool approval callback for HITL
+        async def async_tool_approval(tool_name: str, tool_inputs: dict, context: dict) -> dict:
+            """Request approval for a tool call"""
+            # Check if HITL is enabled
+            if not hitl_enabled:
+                return {'approved': True, 'edited_inputs': tool_inputs, 'feedback': None}
+            
+            # Check if tool is auto-approved
+            if tool_name in auto_approve_tools:
+                backend_logger.debug(f"[Mission {mission_id}] Auto-approving tool: {tool_name}")
+                return {'approved': True, 'edited_inputs': tool_inputs, 'feedback': None}
+            
+            # Request human approval
+            backend_logger.info(f"[Mission {mission_id}] Requesting approval for: {tool_name}")
+            
+            event_data = {
+                "type": "tool_approval_request",
+                "mission_id": mission_id,
+                "tool_name": tool_name,
+                "tool_inputs": tool_inputs,
+                "context": context,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            await redis_mgr.publish_event("missions:all", event_data)
+            
+            # Wait for approval response
+            start_time = datetime.utcnow()
+            approval_response = await tool_approval_queue.get()
+            response_time_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            
+            # Save to database
+            await db.save_tool_approval(
+                mission_id=mission_id,
+                tool_name=tool_name,
+                tool_inputs=tool_inputs,
+                approved=approval_response.get('approved', False),
+                context=context,
+                feedback=approval_response.get('feedback'),
+                edited_inputs=approval_response.get('edited_inputs'),
+                response_time_ms=response_time_ms
+            )
+            
+            return approval_response
+        
+        def sync_tool_approval(tool_name: str, tool_inputs: dict, context: dict) -> dict:
+            """Synchronous wrapper for tool approval"""
+            future = asyncio.run_coroutine_threadsafe(async_tool_approval(tool_name, tool_inputs, context), main_loop)
+            return future.result()
+        
+        # Inject tool approval callback
+        auto_loop.tool_approval_callback = sync_tool_approval
+        auto_loop.hitl_enabled = hitl_enabled
         
         # Run mission in thread pool (since autonomous_loop is synchronous)
         await asyncio.to_thread(
@@ -409,6 +480,71 @@ async def list_missions():
     """List all missions"""
     missions = await db.list_missions()
     return missions
+
+@app.get("/api/settings")
+async def get_settings():
+    """Get global settings"""
+    settings = await db.get_settings()
+    # Convert to simple dict
+    result = {}
+    for key, value in settings.items():
+        result[key] = value if not isinstance(value, str) else json.loads(value)
+    
+    # Flatten nested settings for frontend
+    if 'hitl_enabled' in result:
+        hitl_config = result['hitl_enabled']
+        result['hitl_enabled'] = hitl_config.get('enabled', False)
+    
+    if 'auto_approve_tools' in result:
+        result['auto_approve_tools'] = result['auto_approve_tools']
+    else:
+        result['auto_approve_tools'] = ['view_raw_source', 'view_dom', 'check_network']
+    
+    return result
+
+@app.post("/api/settings")
+async def update_settings(settings: dict):
+    """Update global settings"""
+    # Save HITL config
+    await db.update_setting('hitl_enabled', {
+        'enabled': settings.get('hitl_enabled', False)
+    })
+    
+    # Save auto-approve tools list
+    await db.update_setting('auto_approve_tools', settings.get('auto_approve_tools', []))
+    
+    backend_logger.info(f"Settings updated: {settings}")
+    return {"status": "ok"}
+
+@app.post("/api/tools/approve")
+async def approve_tool(approval: dict):
+    """Approve or reject a tool call"""
+    mission_id = approval.get('mission_id')
+    approved = approval.get('approved', False)
+    feedback = approval.get('feedback', '')
+    edited_inputs = approval.get('edited_inputs')
+    
+    if mission_id in tool_approval_queues:
+        await tool_approval_queues[mission_id].put({
+            'approved': approved,
+            'feedback': feedback,
+            'edited_inputs': edited_inputs
+        })
+        
+        # Save to database for training
+        await db.save_tool_approval(
+            mission_id=mission_id,
+            tool_name=approval.get('tool_name', ''),
+            tool_inputs=approval.get('tool_inputs', {}),
+            approved=approved,
+            context=approval.get('context'),
+            feedback=feedback,
+            edited_inputs=edited_inputs,
+            response_time_ms=approval.get('response_time_ms')
+        )
+        
+        return {"status": "ok"}
+    return {"error": "Mission not found"}, 404
 
 # WebSocket endpoint removed - using SSE instead
 

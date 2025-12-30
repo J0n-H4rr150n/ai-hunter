@@ -134,6 +134,16 @@ class SoMBrowser:
         for log in sorted_logs[:15]:
             summary.append(f"[{log['method']}] {log['status']} {log['url']} \n   Body: {log['body']}")
         return "\n".join(summary)
+    
+    def get_last_request_response(self) -> Optional[Dict[str, Any]]:
+        """Get the most recent network request/response for fuzzing analysis."""
+        if not self.network_logs:
+            return None
+        return self.network_logs[-1]
+    
+    def clear_network_logs(self):
+        """Clear network logs to isolate specific request/response."""
+        self.network_logs = []
 
     # --- INTERNALS: VISUAL MARKING (SoM) ---
     def clean_marks(self):
@@ -220,6 +230,31 @@ class SoMBrowser:
                 return f"Unknown action {action}"
         except Exception as e:
             return f"Interaction failed: {str(e)}"
+    
+    def find_submit_button(self) -> Optional[int]:
+        """Find a submit button near the last interacted element."""
+        try:
+            # Look for common submit button patterns
+            submit_selectors = [
+                'button[type="submit"]',
+                'input[type="submit"]',
+                'button:has-text("submit")',
+                'button:has-text("login")',
+                'button:has-text("search")',
+                'button:has-text("send")',
+                'button:has-text("go")',
+            ]
+            
+            for selector in submit_selectors:
+                elements = self.page.query_selector_all(selector)
+                if elements:
+                    # Find the element ID from our cache
+                    for elem_id, handle in self.element_cache.items():
+                        if handle == elements[0]:
+                            return elem_id
+            return None
+        except:
+            return None
 
     def close(self):
         try:

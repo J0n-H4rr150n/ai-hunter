@@ -58,7 +58,7 @@ class AgentTracker:
             metadata (dict): Optional dictionary of extra data to log alongside the image.
         
         Returns:
-            str: The filepath of the saved screenshot, or None if no browser available.
+            dict: {"filepath": str, "screenshot_bytes": bytes, "relative_path": str} or None
         """
         timestamp = datetime.now().strftime("%H-%M-%S-%f")[:-3]
         
@@ -86,7 +86,15 @@ class AgentTracker:
             if Config.DEBUG:
                 print(f"[Tracker] Shadow captured: {filepath}")
 
-            return str(filepath)
+            # Return both filepath and bytes for UI transmission
+            # Calculate relative path from hive_bucket root
+            relative_path = filepath.relative_to(Config.SHADOW_LOG_DIR.parent)
+            
+            return {
+                "filepath": str(filepath),
+                "screenshot_bytes": screenshot_bytes,
+                "relative_path": str(relative_path).replace("\\", "/")  # Normalize path separators
+            }
 
         except Exception as e:
             print(f"[Tracker] Failed to capture browser screenshot: {e}")

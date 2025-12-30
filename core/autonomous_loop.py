@@ -32,12 +32,52 @@ class AutonomousLoop:
         # UI integration
         self.mission_id = None
         self.ui_callback = None
+        self.web_approval_callback = None  # For plan approval
+        self.tool_approval_callback = None  # For HITL tool approval
+        self.hitl_enabled = False  # HITL flag
         
-    def log_to_ui(self, message: str):
+    def log_to_ui(self, message: str, screenshot: dict = None):
         """Send log message to UI if callback is set"""
         if self.ui_callback:
-            self.ui_callback(message)
-        print(message)  # Always print to console too
+            self.ui_callback(message, screenshot)
+        else:
+            print(message)  # Fallback to console
+    
+    def _send_screenshot_to_ui(self, message: str, shadow_result: dict):
+        """Send a screenshot to the UI via callback."""
+        if self.ui_callback and shadow_result:
+            import base64
+            # Encode screenshot as base64 for transmission
+            screenshot_b64 = base64.b64encode(shadow_result["screenshot_bytes"]).decode('utf-8')
+            self.ui_callback(message, screenshot={
+                "data": screenshot_b64,
+                "path": shadow_result["relative_path"]
+            })
+        else:
+            # Fallback to regular log
+            self.log_to_ui(message)
+    
+    def _request_tool_approval(self, tool_name: str, tool_inputs: dict, context: dict) -> dict:
+        """Request human approval for a tool call via HITL."""
+        if not self.tool_approval_callback:
+            # No callback means no HITL, auto-approve
+            return {'approved': True, 'edited_inputs': tool_inputs, 'feedback': None}
+        
+        # Call the approval callback (will block until human responds)
+        self.log_to_ui(f"[Auto] ⏸️ Requesting approval for: {tool_name}")
+        approval_response = self.tool_approval_callback(tool_name, tool_inputs, context)
+        
+        if approval_response.get('approved'):
+            if approval_response.get('edited_inputs'):
+                self.log_to_ui(f"[Auto] ✅ Approved with edits: {tool_name}")
+            else:
+                self.log_to_ui(f"[Auto] ✅ Approved: {tool_name}")
+        else:
+            self.log_to_ui(f"[Auto] ❌ Rejected: {tool_name}")
+            if approval_response.get('feedback'):
+                self.log_to_ui(f"[Auto] 💬 Feedback: {approval_response['feedback']}")
+        
+        return approval_response
 
     def start_mission(self, goal: str, target_url: str, instructions: str = None):
         """Bootstraps the mission and starts the loop with LLM-generated plan and human approval."""
@@ -163,7 +203,9 @@ class AutonomousLoop:
             self.planner.start_task(task['id'])
             
             # Capture Shadow (Visual log of starting the task)
-            self.tracker.capture_shadow(f"start_{task['type']}", {"task_id": task['id']})
+            shadow_result = self.tracker.capture_shadow(f"start_{task['type']}", {"task_id": task['id']})
+            if shadow_result:
+                self._send_screenshot_to_ui(f"Starting task: {task['description']}", shadow_result)
 
             # 2. Execute Logic
             try:
@@ -186,6 +228,23 @@ class AutonomousLoop:
 
     def _execute_scan(self, task):
         url = task['target']
+        
+        # Request approval for scan operation
+        approval = self._request_tool_approval(
+            tool_name='scan',
+            tool_inputs={'url': url, 'task_id': task['id']},
+            context={'task_type': 'scan', 'description': task.get('description', '')}
+        )
+        
+        if not approval.get('approved'):
+            self.log_to_ui(f"[Auto] ⏭️ Scan rejected, skipping task")
+            self.planner.complete_task(task['id'], "Skipped: User rejected")
+            return
+        
+        # Use edited inputs if provided
+        if approval.get('edited_inputs'):
+            url = approval['edited_inputs'].get('url', url)
+        
         self.log_to_ui(f"[Auto] Running TechScanner on {url}...")
         self.log_to_ui(f"[Scanner] Analyzing technology stack for: {url}")
         
@@ -202,12 +261,14 @@ class AutonomousLoop:
             snapshot = self.browser.get_snapshot_triad()
             
             # Log the discovery
-            self.tracker.capture_shadow("scan_complete", {
+            shadow_result = self.tracker.capture_shadow("scan_complete", {
                 "url": url,
                 "num_elements": len(snapshot['elements'])
             })
-            
-            self.log_to_ui(f"[Auto] ✓ Found {len(snapshot['elements'])} interactive elements on page")
+            if shadow_result:
+                self._send_screenshot_to_ui(f"[Auto] ✓ Found {len(snapshot['elements'])} interactive elements on page", shadow_result)
+            else:
+                self.log_to_ui(f"[Auto] ✓ Found {len(snapshot['elements'])} interactive elements on page")
             
             # Save interesting findings to memory
             if snapshot['elements']:
@@ -225,6 +286,23 @@ class AutonomousLoop:
 
     def _execute_fuzz(self, task):
         url = task['target']
+        
+        # Request approval for fuzz operation
+        approval = self._request_tool_approval(
+            tool_name='fuzz',
+            tool_inputs={'url': url, 'task_id': task['id']},
+            context={'task_type': 'fuzz', 'description': task.get('description', '')}
+        )
+        
+        if not approval.get('approved'):
+            self.log_to_ui(f"[Auto] ⏭️ Fuzzing rejected, skipping task")
+            self.planner.complete_task(task['id'], "Skipped: User rejected")
+            return
+        
+        # Use edited inputs if provided
+        if approval.get('edited_inputs'):
+            url = approval['edited_inputs'].get('url', url)
+        
         self.log_to_ui(f"[Auto] Running Fuzzer on {url}...")
         
         # Get mission instructions for context
@@ -254,10 +332,12 @@ class AutonomousLoop:
             
             if input_elements:
                 self.log_to_ui(f"[Auto] Found {len(input_elements)} input fields to test")
-                self.tracker.capture_shadow("fuzz_inputs_discovered", {
+                shadow_result = self.tracker.capture_shadow("fuzz_inputs_discovered", {
                     "url": url,
                     "inputs": len(input_elements)
                 })
+                if shadow_result:
+                    self._send_screenshot_to_ui(f"[Auto] Discovered {len(input_elements)} testable inputs", shadow_result)
                 
                 # Test first few inputs with payloads
                 for i, elem in enumerate(input_elements[:5]):  # Limit to first 5
@@ -286,17 +366,95 @@ class AutonomousLoop:
                     for payload in test_payloads:
                         if not self.quota.check_limit("actions"):
                             break
+                        
+                        # Request approval for each payload test if HITL enabled
+                        payload_approval = self._request_tool_approval(
+                            tool_name='type',
+                            tool_inputs={'element_id': elem_id, 'payload': payload, 'element_text': elem_text[:50]},
+                            context={'fuzzing': True, 'url': url, 'payload_type': 'xss' if '<script>' in payload else 'sqli' if 'OR' in payload else 'generic'}
+                        )
+                        
+                        if not payload_approval.get('approved'):
+                            self.log_to_ui(f"[Auto] ⏭️ Payload test rejected: {payload[:30]}")
+                            continue
+                        
+                        # Use edited payload if provided
+                        actual_payload = payload_approval.get('edited_inputs', {}).get('payload', payload) if payload_approval.get('edited_inputs') else payload
                             
                         try:
-                            # Type the payload
-                            self.browser.interact("type", elem_id, payload)
+                            # Clear network logs to isolate this request
+                            self.browser.clear_network_logs()
+                            
+                            # Type the actual (possibly edited) payload
+                            self.browser.interact("type", elem_id, actual_payload)
                             self.quota.tally("actions", 1)
                             
-                            # Capture the result
-                            self.tracker.capture_shadow(f"fuzz_input_{elem_id}", {
-                                "payload": payload[:50],
-                                "element": elem_id
-                            })
+                            # Try to submit the form
+                            submit_btn_id = self.browser.find_submit_button()
+                            response_data = None
+                            
+                            if submit_btn_id:
+                                self.log_to_ui(f"[Auto] 📤 Submitting form with payload...")
+                                self.browser.interact("click", submit_btn_id)
+                                self.quota.tally("actions", 1)
+                                
+                                # Wait for network response
+                                time.sleep(1)
+                                
+                                # Capture the request/response
+                                response_data = self.browser.get_last_request_response()
+                                
+                                # Analyze the response
+                                analysis = self._analyze_fuzz_response(payload, response_data, self.browser.page)
+                                
+                                # Save Burp-style request/response
+                                shadow_result = self.tracker.capture_shadow(f"fuzz_test_{elem_id}", {
+                                    "payload": payload,
+                                    "element": elem_id,
+                                    "submitted": True,
+                                    "request": {
+                                        "method": response_data.get("method") if response_data else "N/A",
+                                        "url": response_data.get("url") if response_data else "N/A",
+                                    },
+                                    "response": {
+                                        "status": response_data.get("status") if response_data else "N/A",
+                                        "body": response_data.get("body") if response_data else "N/A",
+                                    },
+                                    "analysis": analysis
+                                })
+                                if shadow_result:
+                                    self._send_screenshot_to_ui(f"[Auto] 🧪 Tested payload: {payload[:30]}...", shadow_result)
+                                
+                                # Log interesting findings
+                                if analysis.get("reflected"):
+                                    self.log_to_ui(f"[Auto] 🚨 Payload REFLECTED in response - potential XSS!")
+                                    self.repo.save_finding(
+                                        content={"url": url, "payload": payload, "element": elem_id, "type": "reflected_input"},
+                                        finding_type="xss_potential",
+                                        source="FuzzerTool",
+                                        tags=["xss", "reflected", "high_priority"]
+                                    )
+                                
+                                if analysis.get("error_detected"):
+                                    self.log_to_ui(f"[Auto] 💥 Error detected: {analysis['error_message'][:100]}")
+                                    self.repo.save_finding(
+                                        content={"url": url, "payload": payload, "error": analysis["error_message"]},
+                                        finding_type="error_disclosure",
+                                        source="FuzzerTool",
+                                        tags=["error", "info_disclosure"]
+                                    )
+                                
+                                # Navigate back to test next payload
+                                self.browser.page.go_back()
+                                time.sleep(0.5)
+                            else:
+                                # No submit button found, just capture the filled form
+                                self.tracker.capture_shadow(f"fuzz_input_{elem_id}", {
+                                    "payload": payload[:50],
+                                    "element": elem_id,
+                                    "submitted": False,
+                                    "note": "No submit button found"
+                                })
                             
                         except Exception as e:
                             self.log_to_ui(f"[Auto] Failed to test element {elem_id}: {e}")
@@ -310,6 +468,59 @@ class AutonomousLoop:
             self.planner.add_task("manual_review", url, "Human review required for confirmed crashes")
 
         self.planner.complete_task(task['id'], "Fuzzing completed")
+    
+    def _analyze_fuzz_response(self, payload, response_data, page):
+        """Analyze a fuzzing response for vulnerabilities."""
+        analysis = {
+            "reflected": False,
+            "error_detected": False,
+            "error_message": None,
+            "timing_anomaly": False
+        }
+        
+        if not response_data:
+            return analysis
+        
+        # Get page content
+        try:
+            page_content = page.content()
+            visible_text = page.inner_text('body')
+        except:
+            page_content = ""
+            visible_text = ""
+        
+        # Check for payload reflection (XSS)
+        if payload in page_content or payload in visible_text:
+            analysis["reflected"] = True
+        
+        # Check for common error patterns
+        error_patterns = [
+            "SQL syntax", "mysql_", "ORA-", "PostgreSQL",
+            "syntax error", "unexpected token",
+            "Traceback", "Exception", "Error:",
+            "stack trace", "at line",
+            "Warning:", "Fatal error",
+            "undefined index", "undefined variable"
+        ]
+        
+        combined_text = (page_content + visible_text).lower()
+        for pattern in error_patterns:
+            if pattern.lower() in combined_text:
+                analysis["error_detected"] = True
+                # Extract error message snippet
+                try:
+                    idx = combined_text.index(pattern.lower())
+                    analysis["error_message"] = combined_text[max(0, idx-50):idx+200]
+                except:
+                    analysis["error_message"] = f"Pattern '{pattern}' detected"
+                break
+        
+        # Check response status
+        if response_data.get("status", 200) >= 500:
+            analysis["error_detected"] = True
+            analysis["error_message"] = f"Server error: {response_data.get('status')}"
+        
+        return analysis
 
     def _execute_analysis(self, task):
         self.log_to_ui("[Auto] analyzing findings...")

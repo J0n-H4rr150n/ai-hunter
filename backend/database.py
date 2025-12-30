@@ -92,6 +92,61 @@ class Database:
             )
             return [dict(row) for row in rows]
     
+    # Settings operations
+    async def get_settings(self, mission_id: Optional[int] = None) -> Dict[str, Any]:
+        """Get settings (mission-specific or global)"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT key, value FROM settings WHERE mission_id IS NULL OR mission_id = $1",
+                mission_id
+            )
+            settings = {}
+            for row in rows:
+                settings[row['key']] = row['value']
+            return settings
+    
+    async def update_setting(self, key: str, value: Any, mission_id: Optional[int] = None):
+        """Update a setting"""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO settings (mission_id, key, value)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (mission_id, key) 
+                DO UPDATE SET value = $3, updated_at = CURRENT_TIMESTAMP
+                """,
+                mission_id, key, json.dumps(value)
+            )
+    
+    # Tool approval operations
+    async def save_tool_approval(
+        self,
+        mission_id: int,
+        tool_name: str,
+        tool_inputs: dict,
+        approved: bool,
+        context: Optional[dict] = None,
+        feedback: Optional[str] = None,
+        edited_inputs: Optional[dict] = None,
+        response_time_ms: Optional[int] = None
+    ) -> int:
+        """Save a tool approval decision"""
+        async with self.pool.acquire() as conn:
+            approval_id = await conn.fetchval(
+                """
+                INSERT INTO tool_approvals 
+                (mission_id, tool_name, tool_inputs, context, approved, feedback, edited_inputs, response_time_ms)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                RETURNING id
+                """,
+                mission_id, tool_name, json.dumps(tool_inputs), 
+                json.dumps(context) if context else None,
+                approved, feedback,
+                json.dumps(edited_inputs) if edited_inputs else None,
+                response_time_ms
+            )
+        return approval_id
+    
     # Finding operations
     async def save_finding(
         self,

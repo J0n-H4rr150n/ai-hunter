@@ -46,6 +46,9 @@
                 <h1 class="text-2xl font-bold text-blue-400">AI Hunter</h1>
             </div>
             <div class="flex items-center space-x-6">
+                <button id="open-settings-modal" class="text-gray-400 hover:text-gray-200 transition" title="Settings">
+                    ⚙️
+                </button>
                 <button id="open-mission-modal" class="text-blue-400 hover:text-blue-300 font-semibold transition">
                     + New Mission
                 </button>
@@ -98,6 +101,73 @@
                 <button id="start-mission-btn"
                     class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition duration-200 transform hover:scale-105">
                     Start Mission
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center">
+        <div class="bg-gray-800 rounded-lg p-8 max-w-2xl w-full mx-4 border border-gray-700 shadow-2xl">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-2xl font-semibold text-blue-300">⚙️ Settings</h2>
+                <button id="close-settings-modal" class="text-gray-400 hover:text-gray-200 text-2xl">
+                    ×
+                </button>
+            </div>
+
+            <div class="space-y-6">
+                <!-- HITL Section -->
+                <div class="border-b border-gray-700 pb-6">
+                    <h3 class="text-lg font-semibold text-purple-300 mb-4">🤝 Human-In-The-Loop (HITL)</h3>
+                    
+                    <div class="space-y-4">
+                        <label class="flex items-center space-x-3 cursor-pointer">
+                            <input type="checkbox" id="hitl-enabled" class="w-5 h-5 rounded bg-gray-700 border-gray-600">
+                            <span class="text-sm">Enable HITL - Require approval for all tool calls</span>
+                        </label>
+
+                        <div id="hitl-options" class="ml-8 space-y-3 hidden">
+                            <p class="text-sm text-gray-400">Auto-approve these tools (no human approval needed):</p>
+                            <div class="space-y-2">
+                                <label class="flex items-center space-x-2 cursor-pointer">
+                                    <input type="checkbox" class="auto-approve-tool" value="view_raw_source" checked>
+                                    <span class="text-sm">view_raw_source</span>
+                                </label>
+                                <label class="flex items-center space-x-2 cursor-pointer">
+                                    <input type="checkbox" class="auto-approve-tool" value="view_dom" checked>
+                                    <span class="text-sm">view_dom</span>
+                                </label>
+                                <label class="flex items-center space-x-2 cursor-pointer">
+                                    <input type="checkbox" class="auto-approve-tool" value="check_network" checked>
+                                    <span class="text-sm">check_network</span>
+                                </label>
+                                <label class="flex items-center space-x-2 cursor-pointer">
+                                    <input type="checkbox" class="auto-approve-tool" value="navigate">
+                                    <span class="text-sm">navigate</span>
+                                </label>
+                                <label class="flex items-center space-x-2 cursor-pointer">
+                                    <input type="checkbox" class="auto-approve-tool" value="click">
+                                    <span class="text-sm">click</span>
+                                </label>
+                                <label class="flex items-center space-x-2 cursor-pointer">
+                                    <input type="checkbox" class="auto-approve-tool" value="type">
+                                    <span class="text-sm">type</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Future Settings Sections -->
+                <div class="border-b border-gray-700 pb-6">
+                    <h3 class="text-lg font-semibold text-purple-300 mb-4">🎨 Display</h3>
+                    <p class="text-sm text-gray-400">More settings coming soon...</p>
+                </div>
+
+                <button id="save-settings-btn"
+                    class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg transition duration-200">
+                    Save Settings
                 </button>
             </div>
         </div>
