@@ -32,16 +32,23 @@ class PlaybookManager:
         self.completed_stages = []
         self.playbook_findings = {}  # stage -> findings
     
-    def list_available_playbooks(self) -> List[Dict[str, Any]]:
-        """
-        List all available playbooks for UI dropdown
-        Returns list of dicts with: {name, description, category, difficulty, tags}
-        """
+    def get_available_playbooks(self) -> List[Dict[str, Any]]:
+        """Get list of all available playbooks with metadata"""
         playbooks = []
         
         for yaml_file in self.playbooks_dir.glob("*.yaml"):
             try:
-                playbook = self.load_playbook(yaml_file.stem)
+                with open(yaml_file, 'r', encoding='utf-8') as f:
+                    playbook = yaml.safe_load(f)
+                
+                # Validate before adding to list
+                try:
+                    self._validate_playbook(playbook)
+                except ValueError as ve:
+                    error_msg = f"Invalid playbook {yaml_file.stem}: {ve}"
+                    logger.error(f"[PlaybookManager] ❌ {error_msg}")
+                    raise ValueError(error_msg) from ve
+                
                 metadata = playbook.get('metadata', {})
                 
                 playbooks.append({
@@ -54,7 +61,9 @@ class PlaybookManager:
                     'tags': metadata.get('tags', [])
                 })
             except Exception as e:
-                print(f"Warning: Could not load playbook {yaml_file.stem}: {e}")
+                error_msg = f"Could not load playbook {yaml_file.stem}: {e}"
+                logger.error(f"[PlaybookManager] ❌ {error_msg}")
+                raise ValueError(error_msg) from e  # ABORT on playbook errors
         
         # Sort by category then name
         playbooks.sort(key=lambda x: (x['category'], x['name']))

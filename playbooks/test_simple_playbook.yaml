@@ -30,6 +30,17 @@ sequence:
       action: "proceed"
     on_failure:
       action: "abort"
+  
+  - runbook: "search_runbook"
+    stage: 2
+    name: "Pattern Search"
+    required: false
+    description: "Query attack pattern knowledge base for relevant techniques"
+    hitl_checkpoint: false
+    on_complete:
+      action: "proceed"
+    on_failure:
+      action: "proceed"  # Continue even if search fails
 
 # No conditional steps for simple test
 conditional_steps: []

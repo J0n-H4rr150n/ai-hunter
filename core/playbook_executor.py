@@ -641,67 +641,180 @@ class PlaybookExecutor:
     async def _execute_step_with_agent_guidance(self, step: dict, runbook: dict, 
                                                execution_context: dict) -> Dict[str, Any]:
         """
-        Execute step with agent intelligence + runbook guidance.
+        Execute step with LLM-generated iteration plan.
         
-        Agent understands the runbook step objective and uses its intelligence
-        to accomplish it, adapting to what it observes on the page.
+        This generates a custom plan for accomplishing the step objective,
+        stores it as an iteration in the database, publishes to UI, then executes.
         """
         
         action = step['action']
-        self._log(f"[Step] 🤖 Agent-guided execution for: {step['name']}")
+        step_name = step['name']
+        step_description = step.get('description', '')
         
-        # Get current state for agent
-        if not self.loop.browser:
-            self._log(f"[Step] ⚠️  No browser available for agent guidance, falling back to tools")
+        self._log(f"[Step] 🤖 Generating plan for: {step_name}")
+        
+        # Fallback if no browser or database
+        if not self.loop.browser or not self.db:
+            self._log(f"[Step] ⚠️  Missing browser or database, falling back to tools")
             return await self._execute_step_with_tools(step, execution_context)
         
         try:
-            # Get page state
-            screenshot_bytes = await self.loop.browser.capture_screenshot()
-            element_list = await self.loop.browser.get_interactive_elements()
+            # STEP 1: Get previous iterations for context
+            previous_iterations = await self.db.get_mission_iterations(self.context.mission_id)
+            iteration_number = len(previous_iterations) + 1
             
-            # Optional: get text context based on step
-            text_context = None
-            if action in ['view_source', 'inspect_dom']:
-                text_context = await self.loop.browser.get_html_source()
-            elif action in ['monitor_network', 'check_network']:
-                text_context = await self.loop.browser.get_network_logs()
+            self._log(f"[Step] 📚 Previous iterations: {len(previous_iterations)}")
             
-            # Build step context
-            step_context = {
-                'goal': execution_context['goal'],
-                'findings': list(self.context.all_findings.values()),
-                'history': []  # Could be populated from agent's action history
+            # STEP 2: Get current page state
+            triad = None
+            try:
+                triad = self.loop.browser.get_snapshot_triad()
+            except:
+                pass  # Continue without visual context if unavailable
+            
+            # STEP 3: Build context for LLM planner
+            planning_context = {
+                'mission_goal': execution_context['goal'],
+                'target_url': execution_context['target_url'],
+                'step_objective': f"{step_name}: {step_description}",
+                'previous_findings': [
+                    {
+                        'iteration': iter['iteration_number'],
+                        'findings': iter.get('findings_summary', 'No summary')
+                    }
+                    for iter in previous_iterations
+                ],
+                'available_tools': [
+                    'navigate', 'screenshot', 'view_source', 'inspect_dom',
+                    'parse_url', 'monitor_network', 'check_forms'
+                ]
             }
             
-            # Ask agent to plan this specific step
-            agent_decision = self.loop.agent.plan_next_step_from_runbook(
-                runbook_step=step,
-                step_context=step_context,
-                screenshot_bytes=screenshot_bytes,
-                element_list=element_list,
-                text_context=text_context
+            # STEP 4: Generate plan using TacticalPlanner
+            from core.tactical_planner import TacticalPlanner
+            planner = TacticalPlanner()
+            
+            # Build step-specific goal
+            step_goal = f"{step_name}: {step_description}. Target: {execution_context['target_url']}"
+            
+            # Generate plan (may need to adapt TacticalPlanner to accept step context)
+            plan = planner.generate_plan(
+                goal=step_goal,
+                triad=triad,
+                tech_report=planning_context  # Pass context as tech_report
             )
             
-            self._log(f"[Step] 💭 Agent thought: {agent_decision.get('thought', 'N/A')}")
-            self._log(f"[Step] ⚡ Agent action: {agent_decision.get('action', 'N/A')}")
+            self._log(f"[Step] ✨ Generated plan with {len(plan.get('steps', []))} steps")
             
-            # Execute the agent's decision
-            # This would integrate with the autonomous loop's action execution
-            # For now, we'll convert agent action to findings
+            # STEP 5: Create iteration in database
+            iteration_id = await self.db.create_iteration(
+                mission_id=self.context.mission_id,
+                iteration_number=iteration_number,
+                plan=plan
+            )
             
-            findings = {
-                'agent_decision': agent_decision,
-                'step_completed': True,
-                'agent_guided': True,
-                'runbook_step': step['id']
-            }
+            await self.db.update_iteration_status(iteration_id, "in_progress")
+            
+            self._log(f"[Step] 💾 Created iteration {iteration_number} (ID: {iteration_id})")
+            
+            # STEP 6: Publish plan to UI
+            await self._publish_progress({
+                "type": "iteration_plan",
+                "iteration_number": iteration_number,
+                "plan": {
+                    "rationale": plan.get('rationale', step_description),
+                    "steps": plan.get('steps', []),
+                    "budgets": plan.get('budgets', {})
+                }
+            })
+            
+            self._log(f"[Step] 📤 Published plan to UI")
+            
+            # STEP 7: Execute the generated plan
+            findings = await self._execute_generated_plan(plan, step, execution_context)
+            
+            # STEP 8: Update iteration with results
+            findings_summary = f"Completed {step_name}. Found: {len(findings)} findings"
+            await self.db.update_iteration_status(
+                iteration_id,
+                "completed",
+                findings_summary
+            )
+            
+            self._log(f"[Step] ✅ Iteration {iteration_number} complete")
             
             return findings
             
         except Exception as e:
-            self._log(f"[Step] ⚠️  Agent guidance failed: {e}, falling back to tools")
+            self._log(f"[Step] ⚠️  LLM planning failed: {e}, falling back to tools")
+            import traceback
+            traceback.print_exc()
             return await self._execute_step_with_tools(step, execution_context)
+    
+    async def _execute_generated_plan(self, plan: dict, original_step: dict, 
+                                     execution_context: dict) -> Dict[str, Any]:
+        """
+        Execute a plan generated by the LLM.
+        
+        Args:
+            plan: Generated plan with steps/budgets
+            original_step: Original runbook step
+            execution_context: Execution context
+            
+        Returns:
+            Aggregated findings from plan execution
+        """
+        
+        all_findings = {}
+        plan_steps = plan.get('steps', [])
+        
+        self._log(f"[Plan] Executing {len(plan_steps)} plan steps...")
+        
+        for i, plan_step in enumerate(plan_steps, 1):
+            # Convert plan step to tool action
+            if isinstance(plan_step, str):
+                # Simple string step - try to infer action
+                action_text = plan_step.lower()
+                if 'navigate' in action_text:
+                    action = 'navigate'
+                    tool = 'som_browser'
+                elif 'screenshot' in action_text or 'capture' in action_text:
+                    action = 'capture_screenshot'
+                    tool = 'som_browser'
+                elif 'source' in action_text or 'html' in action_text:
+                    action = 'view_source'
+                    tool = 'som_browser'
+                else:
+                    # Default to the original step's action
+                    action = original_step.get('action', 'unknown')
+                    tool = original_step.get('tool', 'unknown')
+            elif isinstance(plan_step, dict):
+                # Structured step
+                action = plan_step.get('action', original_step.get('action'))
+                tool = plan_step.get('tool', original_step.get('tool'))
+            else:
+                continue
+            
+            self._log(f"[Plan] Step {i}/{len(plan_steps)}: {action}")
+            
+            # Create temporary step dict for execution
+            temp_step = {
+                'id': f"{original_step['id']}_plan_{i}",
+                'name': f"Plan step {i}",
+                'action': action,
+                'tool': tool,
+                'inputs': plan_step.get('inputs', {}) if isinstance(plan_step, dict) else {}
+            }
+            
+            try:
+                step_findings = await self._execute_step_with_tools(temp_step, execution_context)
+                all_findings[f"step_{i}"] = step_findings
+            except Exception as e:
+                self._log(f"[Plan] ⚠️  Step {i} failed: {e}")
+                all_findings[f"step_{i}_error"] = str(e)
+        
+        return all_findings
+
     
     async def _execute_step_with_agent_free(self, step: dict, runbook: dict,
                                             execution_context: dict) -> Dict[str, Any]:

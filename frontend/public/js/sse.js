@@ -172,7 +172,7 @@ export function connectToSSE() {
         if (window.updatePlaybookProgress) {
             window.updatePlaybookProgress(data);
         }
-        
+
         // Also add to feed for key milestones
         if (data.runbook_completed) {
             addToFeed({
@@ -229,6 +229,28 @@ export function connectToSSE() {
             message: '▶️  Playbook resumed',
             timestamp: data.timestamp || new Date().toISOString()
         });
+    });
+
+    // Iteration plan generated
+    state.eventSource.addEventListener('iteration_plan', async (event) => {
+        const data = JSON.parse(event.data);
+        console.log('📋 Iteration plan received:', data);
+
+        // Display in Plan tab
+        const { displayIterationPlan } = await import('./plan.js');
+        displayIterationPlan(data.iteration_number, data.plan);
+
+        addToFeed({
+            message: `📋 Plan generated for Iteration ${data.iteration_number}`,
+            timestamp: data.timestamp || new Date().toISOString()
+        });
+    });
+
+    // Iteration status update
+    state.eventSource.addEventListener('iteration_status', async (event) => {
+        const data = JSON.parse(event.data);
+        const { updateIterationStatus } = await import('./plan.js');
+        updateIterationStatus(data.iteration_number, data.status);
     });
 }
 

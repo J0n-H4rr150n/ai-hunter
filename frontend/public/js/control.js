@@ -6,9 +6,9 @@ export function initMissionControl() {
     const pauseBtn = document.getElementById('pause-btn');
     const resumeBtn = document.getElementById('resume-btn');
     const stopBtn = document.getElementById('stop-btn');
-    const messageInput = document.getElementById('user-message-input');
     const sendBtn = document.getElementById('send-message-btn');
-    const statusText = document.getElementById('mission-control-status');
+    const messageInput = document.getElementById('user-message-input');
+    const statusText = document.getElementById('mission-control-status'); // May not exist
 
     // Pause mission
     pauseBtn.addEventListener('click', async () => {
@@ -20,7 +20,7 @@ export function initMissionControl() {
             });
 
             pauseBtn.disabled = true;
-            statusText.textContent = 'Pausing...';
+            if (statusText) statusText.textContent = 'Pausing...';
 
             addToFeed({
                 message: '⏸️ Pause requested - agent will pause after current task completes',
@@ -42,7 +42,7 @@ export function initMissionControl() {
 
             resumeBtn.classList.add('hidden');
             pauseBtn.classList.remove('hidden');
-            statusText.textContent = 'Running';
+            if (statusText) statusText.textContent = 'Running';
 
             addToFeed({
                 message: '▶️ Mission resumed',
@@ -67,7 +67,7 @@ export function initMissionControl() {
             });
 
             disableControls();
-            statusText.textContent = 'Stopped';
+            if (statusText) statusText.textContent = 'Stopped';
 
             addToFeed({
                 message: '⏹️ Mission force-stopped by user (all tasks terminated)',
@@ -123,7 +123,8 @@ export function enableControls() {
     document.getElementById('stop-btn').disabled = false;
     document.getElementById('user-message-input').disabled = false;
     document.getElementById('send-message-btn').disabled = false;
-    document.getElementById('mission-control-status').textContent = 'Running';
+    const statusText = document.getElementById('mission-control-status');
+    if (statusText) statusText.textContent = 'Running';
 }
 
 // Disable controls when no mission
@@ -135,7 +136,8 @@ export function disableControls() {
     document.getElementById('stop-btn').disabled = true;
     document.getElementById('user-message-input').disabled = true;
     document.getElementById('send-message-btn').disabled = true;
-    document.getElementById('mission-control-status').textContent = 'No mission';
+    const statusText = document.getElementById('mission-control-status');
+    if (statusText) statusText.textContent = 'No mission';
 }
 
 // Update status from SSE events
@@ -146,30 +148,30 @@ export function updateControlStatus(status) {
 
     switch (status) {
         case 'running':
-            statusText.textContent = 'Running';
+            if (statusText) statusText.textContent = 'Running';
             pauseBtn.classList.remove('hidden');
             resumeBtn.classList.add('hidden');
             break;
         case 'paused':
-            statusText.textContent = 'Paused';
+            if (statusText) statusText.textContent = 'Paused';
             pauseBtn.classList.add('hidden');
             pauseBtn.disabled = false;
             resumeBtn.classList.remove('hidden');
             resumeBtn.disabled = false;
             break;
         case 'pausing':
-            statusText.textContent = 'Pausing...';
+            if (statusText) statusText.textContent = 'Pausing...';
             pauseBtn.disabled = true;
             break;
         case 'waiting_for_user':
-            statusText.textContent = 'Waiting for you';
+            if (statusText) statusText.textContent = 'Waiting for you';
             pauseBtn.classList.add('hidden');
             resumeBtn.classList.add('hidden');
             break;
         case 'stopped':
         case 'complete':
             disableControls();
-            statusText.textContent = status === 'complete' ? 'Complete' : 'Stopped';
+            if (statusText) statusText.textContent = status === 'complete' ? 'Complete' : 'Stopped';
             break;
     }
 }

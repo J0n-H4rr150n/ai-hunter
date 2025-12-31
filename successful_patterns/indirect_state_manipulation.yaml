@@ -1,0 +1,84 @@
+---
+# Indirect State Manipulation Pattern
+# Anonymized from real-world IDOR vulnerabilities
+
+metadata:
+  name: "Indirect State Manipulation"
+  difficulty: advanced
+  tags: [idor, state-change, multi-step, authorization-bypass]
+  description: "Access resources indirectly by manipulating state through intermediate endpoints"
+
+pattern:
+  description: |
+    When direct access to protected resources fails uniformly across all identifiers,
+    the application may use state-based authorization where access is granted based on
+    previous interactions rather than direct ownership checks.
+    
+    This pattern involves calling an intermediate "state-changing" endpoint that doesn't
+    return visible results, but internally modifies your permissions for a subsequent
+    resource access attempt.
+    
+  indicators:
+    - "Multiple endpoints sharing the same ID parameter structure"
+    - "Endpoint verbs suggest state changes: subscribe, bookmark, save, archive, mark, register"
+    - "Initial fuzzing shows uniform 401/403/404 responses across all ID values"
+    - "No visible response differences or error message variations"
+    - "State-changing endpoints return 200 OK but no meaningful content"
+    - "Application tracks user interactions or preferences"
+    
+  attack_sequence:
+    - step: 1
+      action: "Establish baseline by fuzzing target endpoint with ID range (e.g., 1-100)"
+      tool: "fuzzer"
+      expected_result: "All requests should fail with uniform 401 Unauthorized, 403 Forbidden or 404 Not Found"
+      rationale: "Capture baseline to compare against post-state-change results"
+      
+    - step: 2
+      action: "Enumerate endpoints looking for state-manipulation verbs"
+      tool: "endpoint_discovery"
+      expected_result: "Find endpoints like /api/bookmark/{id}, /api/subscribe/{id}, /api/disable/{id}"
+      rationale: "These endpoints likely modify internal user state or preferences"
+      
+    - step: 3
+      action: "Call each state-changing endpoint for every ID in range"
+      tool: "request_sender"
+      expected_result: "200 OK responses with minimal/no body content"
+      rationale: "Potential permission modification happening server-side without visible feedback"
+      
+    - step: 4
+      action: "Re-fuzz the original target endpoint with same ID range"
+      tool: "fuzzer"
+      expected_result: "Some IDs now return 200 OK with actual content instead of 403/404"
+      rationale: "State change has granted access to previously forbidden resources"
+      
+    - step: 5
+      action: "Diff baseline results (step 1) with post-state results (step 4)"
+      tool: "diff_analyzer"
+      expected_result: "Identify specific IDs that became accessible"
+      rationale: "These IDs are vulnerable to indirect IDOR via state manipulation"
+      
+    - step: 6
+      action: "Extract sensitive data from newly accessible resources"
+      tool: "content_extractor"
+      expected_result: "Access to data belonging to other users/entities"
+      rationale: "Confirm IDOR vulnerability and extract proof"
+  
+  example_scenario:
+    description: "Resource management system with state modification"
+    target_endpoint: "/api/resources/{resource_id}/view"
+    state_endpoint: "/api/resources/{resource_id}/disable"
+    exploitation_flow:
+      - "GET /api/resources/5432/view → 403 Forbidden (not your resource)"
+      - "POST /api/resources/5432/disable → 200 OK (marks you as 'modifier')"
+      - "GET /api/resources/5432/view → 200 OK + resource data (now allowed as modifier)"
+    root_cause: "Authorization checks view access based on 'modifier' role, not ownership"
+    
+  mitigation:
+    - "Verify ownership on all resource access, not just state-changing operations"
+    - "Don't grant access based solely on interaction history"
+    - "Implement consistent authorization checks across all endpoints"
+    - "Use resource-level ACLs instead of user-state-based permissions"
+    
+  references:
+    - "OWASP A01:2021 Broken Access Control"
+    - "CWE-639: Authorization Bypass Through User-Controlled Key"

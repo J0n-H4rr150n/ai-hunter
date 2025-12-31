@@ -3,6 +3,13 @@ import { addToFeed } from './feed.js';
 
 export function updateMissionStatus(data) {
     console.log('Mission status update:', data);
+
+    // Update control button visibility based on mission status
+    if (data.type === 'mission_started' || data.type === 'playbook_started') {
+        updateMissionControls({ status: 'running' });
+    } else if (data.type === 'mission_complete' || data.type === 'mission_failed' || data.type === 'playbook_completed') {
+        updateMissionControls({ status: 'completed' });
+    }
 }
 
 export async function loadMissionHistory() {
@@ -27,8 +34,13 @@ export async function loadMissionHistory() {
 export function initMissionSelector() {
     document.getElementById('mission-selector').addEventListener('change', async (e) => {
         if (e.target.value === 'live') {
+            // Switching back to live mission view
             state.currentMissionId = null;
             document.getElementById('feed-content').innerHTML = '';
+
+            // Hide controls since no mission is running yet
+            updateMissionControls(null);
+
             return;
         }
 
@@ -40,13 +52,101 @@ export function initMissionSelector() {
 async function loadHistoricMission(missionId) {
     try {
         console.log('Loading historic mission:', missionId);
+        state.currentMissionId = missionId;  // Set to historical mission
+
+        // 1. Clear current feed
+        const feedContent = document.getElementById('feed-content');
+        feedContent.innerHTML = '';
+
+        // 2. Load mission details
+        const missionResponse = await fetch(`${BACKEND_URL}/api/missions/${missionId}`);
+        const mission = await missionResponse.json();
+
+        // 3. Load activity feed history
+        const activityResponse = await fetch(`${BACKEND_URL}/api/missions/${missionId}/activity`);
+        const activityLogs = await activityResponse.json();
+
+        // Display header message
         addToFeed({
-            message: `📜 Viewing historic mission ${missionId}`,
-            timestamp: new Date().toISOString()
+            message: `📜 Viewing historical mission ${missionId}: ${mission.target_url} (${mission.status})`,
+            timestamp: new Date().toISOString(),
+            type: 'info'
         });
+
+        // Display all historical activity logs
+        activityLogs.forEach(log => {
+            addToFeed({
+                message: log.message,
+                timestamp: log.timestamp,
+                type: log.message_type,
+                screenshot: log.screenshot_path ? { path: log.screenshot_path } : null
+            });
+        });
+
+        // 4. Load iterations/plan if available
+        try {
+            const iterationsResponse = await fetch(`${BACKEND_URL}/api/missions/${missionId}/iterations`);
+            const iterations = await iterationsResponse.json();
+
+            if (iterations && iterations.length > 0) {
+                updateIterationsDisplay(iterations);
+            }
+        } catch (err) {
+            console.warn('No iterations for this mission:', err);
+        }
+
+        // 5. Load evidence/findings
+        try {
+            const evidenceResponse = await fetch(`${BACKEND_URL}/api/missions/${missionId}/evidence`);
+            const evidence = await evidenceResponse.json();
+
+            updateEvidenceDisplay(evidence);
+        } catch (err) {
+            console.warn('No evidence for this mission:', err);
+        }
+
+        // 6. Hide mission controls for historical missions
+        updateMissionControls(null);
+
     } catch (error) {
         console.error('Failed to load historic mission:', error);
+        addToFeed({
+            message: `❌ Failed to load mission ${missionId}: ${error.message}`,
+            timestamp: new Date().toISOString(),
+            type: 'error'
+        });
     }
+}
+
+// Helper function to update mission control button visibility
+function updateMissionControls(missionState) {
+    const pauseBtn = document.getElementById('pause-btn');
+    const resumeBtn = document.getElementById('resume-btn');
+    const stopBtn = document.getElementById('stop-btn');
+
+    if (!pauseBtn || !resumeBtn || !stopBtn) return;
+
+    // Only show controls if there's an active (running) mission
+    if (missionState && missionState.status === 'running') {
+        pauseBtn.classList.remove('hidden');
+        stopBtn.classList.remove('hidden');
+        resumeBtn.classList.add('hidden');
+    } else {
+        // Hide all buttons when no mission or mission not running
+        pauseBtn.classList.add('hidden');
+        resumeBtn.classList.add('hidden');
+        stopBtn.classList.add('hidden');
+    }
+}
+
+function updateIterationsDisplay(iterations) {
+    // TODO: Update Plan tab to show historical iterations
+    console.log('Historical iterations:', iterations);
+}
+
+function updateEvidenceDisplay(evidence) {
+    // TODO: Update Evidence tab to show historical findings
+    console.log('Historical evidence:', evidence);
 }
 
 // Start new mission
@@ -109,7 +209,7 @@ export function initNewMissionButton() {
                 target_url: savedUrl,
                 instructions: savedInstructions || null
             };
-            
+
             if (playbook) {
                 payload.playbook_name = savedPlaybook;
             }
@@ -122,7 +222,10 @@ export function initNewMissionButton() {
 
             const data = await response.json();
             state.currentMissionId = data.mission_id;
-            
+
+            // Show controls for new running mission
+            updateMissionControls({ status: 'running' });
+
             if (playbook) {
                 state.currentPlaybook = savedPlaybook;
                 addToFeed({
@@ -148,7 +251,7 @@ async function loadAvailablePlaybooks() {
 
         const playbooks = await response.json();
         const selector = document.getElementById('playbook-selector');
-        
+
         // Clear existing options except first (Tactical Mode)
         while (selector.options.length > 1) {
             selector.remove(1);
@@ -157,12 +260,12 @@ async function loadAvailablePlaybooks() {
         // Add playbooks
         playbooks.forEach(playbook => {
             const option = document.createElement('option');
-            option.value = playbook.name;
-            
-            const emoji = playbook.category === 'ctf' ? '🏴' : 
-                         playbook.category === 'test' ? '🧪' : '📋';
-            
-            option.textContent = `${emoji} ${playbook.metadata.name || playbook.name}`;
+            option.value = playbook.id;  // Use id (filename stem) as value
+
+            const emoji = playbook.category === 'ctf' ? '🏴' :
+                playbook.category === 'test' ? '🧪' : '📋';
+
+            option.textContent = `${emoji} ${playbook.name}`;  // Use name from metadata
             selector.appendChild(option);
         });
     } catch (error) {
@@ -179,16 +282,16 @@ async function showPlaybookInfo(playbookName) {
         const playbook = await response.json();
         const info = playbook.metadata;
 
-        document.getElementById('playbook-description').textContent = 
+        document.getElementById('playbook-description').textContent =
             info.description || 'No description available';
-        
-        document.getElementById('playbook-category').textContent = 
+
+        document.getElementById('playbook-category').textContent =
             `📂 ${info.category || 'N/A'}`;
-        
-        document.getElementById('playbook-difficulty').textContent = 
+
+        document.getElementById('playbook-difficulty').textContent =
             `⭐ ${info.difficulty || 'N/A'}`;
-        
-        document.getElementById('playbook-duration').textContent = 
+
+        document.getElementById('playbook-duration').textContent =
             `⏱️  ${info.estimated_duration || 'N/A'}`;
 
         document.getElementById('playbook-info').classList.remove('hidden');
@@ -201,7 +304,7 @@ async function showPlaybookInfo(playbookName) {
 export function updatePlaybookProgress(data) {
     const container = document.getElementById('playbook-progress-container');
     const controls = document.getElementById('playbook-controls');
-    
+
     if (!data || !data.playbook_name) {
         container.innerHTML = '<div class="text-sm text-gray-400 text-center py-8">No playbook running</div>';
         controls.classList.add('hidden');

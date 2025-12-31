@@ -45,22 +45,122 @@ export function addIdea(idea) {
     container.firstChild.appendChild(ideaElement);
 }
 
+export function displayIterationPlan(iterationNum, plan) {
+    const container = document.getElementById('plan-status-container');
+
+    // Clear "No active plan" message on first iteration
+    if (container.textContent.includes('No active plan')) {
+        container.innerHTML = '';
+    }
+
+    // Create collapsible iteration section
+    const iterationSection = document.createElement('details');
+    iterationSection.open = true; // Auto-expand current iteration
+    iterationSection.className = 'mb-3 bg-gray-700 rounded-lg border border-blue-500';
+
+    iterationSection.innerHTML = `
+        <summary class="cursor-pointer font-semibold text-sm p-3 hover:bg-gray-650 flex items-center justify-between">
+            <span>
+                <span class="text-blue-400">📋</span>
+                <span class="ml-2">Iteration ${iterationNum}</span>
+            </span>
+            <span class="text-xs text-gray-400">Planning</span>
+        </summary>
+        
+        <div class="p-3 border-t border-gray-600 space-y-3">
+            ${plan.rationale ? `
+                <div>
+                    <p class="text-xs font-semibold text-gray-400 mb-1">💭 Goal:</p>
+                    <p class="text-xs text-gray-300">${plan.rationale}</p>
+                </div>
+            ` : ''}
+            
+            ${plan.steps && plan.steps.length > 0 ? `
+                <div>
+                    <p class="text-xs font-semibold text-gray-400 mb-2">📝 Steps (${plan.steps.length}):</p>
+                    <ol class="space-y-1 text-xs text-gray-300">
+                        ${plan.steps.map((step, idx) => {
+        const stepText = typeof step === 'object'
+            ? `${step.action || ''}${step.target ? ': ' + step.target : ''}`
+            : step;
+        return `
+                                <li class="pl-4 border-l-2 border-gray-600 hover:border-blue-500 transition">
+                                    <span class="text-gray-500">${idx + 1}.</span> ${stepText}
+                                </li>
+                            `;
+    }).join('')}
+                    </ol>
+                </div>
+            ` : ''}
+            
+            ${plan.budgets ? `
+                <div>
+                    <p class="text-xs font-semibold text-gray-400 mb-2">💰 Budgets:</p>
+                    <div class="flex flex-wrap gap-1">
+                        ${Object.entries(plan.budgets).map(([tool, count]) =>
+        `<span class="text-xs bg-gray-800 px-2 py-1 rounded">${tool}: ${count}</span>`
+    ).join('')}
+                    </div>
+                </div>
+            ` : ''}
+        </div>
+    `;
+
+    container.appendChild(iterationSection);
+}
+
+export function updateIterationStatus(iterationNum, status) {
+    // Find the iteration and update its status badge
+    const container = document.getElementById('plan-status-container');
+    const iterations = container.querySelectorAll('details');
+
+    if (iterations[iterationNum - 1]) {
+        const statusSpan = iterations[iterationNum - 1].querySelector('summary span:last-child');
+        if (statusSpan) {
+            switch (status) {
+                case 'executing':
+                    statusSpan.textContent = 'Executing';
+                    statusSpan.className = 'text-xs text-blue-400';
+                    break;
+                case 'completed':
+                    statusSpan.textContent = 'Completed';
+                    statusSpan.className = 'text-xs text-green-400';
+                    iterations[iterationNum - 1].open = false; // Collapse completed
+                    break;
+                case 'failed':
+                    statusSpan.textContent = 'Failed';
+                    statusSpan.className = 'text-xs text-red-400';
+                    break;
+            }
+        }
+    }
+}
+
 export function togglePlanSidebar() {
     const sidebar = document.getElementById('plan-sidebar');
-    const toggle = document.getElementById('sidebar-toggle');
+    const isCollapsed = sidebar.classList.contains('collapsed');
 
-    state.sidebarCollapsed = !state.sidebarCollapsed;
-
-    if (state.sidebarCollapsed) {
-        sidebar.classList.add('w-12');
-        sidebar.classList.remove('w-80');
-        document.getElementById('sidebar-content').classList.add('hidden');
-        toggle.textContent = '▶';
+    if (isCollapsed) {
+        // Expand sidebar
+        sidebar.classList.remove('collapsed');
+        state.sidebarCollapsed = false;
     } else {
-        sidebar.classList.remove('w-12');
-        sidebar.classList.add('w-80');
-        document.getElementById('sidebar-content').classList.remove('hidden');
-        toggle.textContent = '◀';
+        // Collapse sidebar
+        sidebar.classList.add('collapsed');
+        state.sidebarCollapsed = true;
+    }
+
+    // Persist state to localStorage
+    localStorage.setItem('sidebarCollapsed', state.sidebarCollapsed);
+}
+
+// Restore sidebar state on page load
+export function restoreSidebarState() {
+    const wasCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+    if (wasCollapsed) {
+        const sidebar = document.getElementById('plan-sidebar');
+        sidebar.classList.add('collapsed');
+        state.sidebarCollapsed = true;
     }
 }
 
@@ -385,3 +485,5 @@ window.editPlanInline = function (missionId) {
 // Export for window globals
 window.togglePlanSidebar = togglePlanSidebar;
 window.switchSidebarTab = switchSidebarTab;
+window.displayIterationPlan = displayIterationPlan;
+window.updateIterationStatus = updateIterationStatus;

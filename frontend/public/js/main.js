@@ -4,8 +4,9 @@ import { initScrollDetection } from './feed.js';
 import { loadMissionHistory, initMissionSelector, initNewMissionButton, updatePlaybookProgress } from './missions.js';
 import { initEvidenceModal } from './evidence.js';
 import { loadSettings, initSettingsModal } from './settings.js';
-import { switchSidebarTab } from './plan.js';
+import { switchSidebarTab, restoreSidebarState } from './plan.js';
 import { pausePlaybook, resumePlaybook, createCheckpoint, showCheckpoints, restoreCheckpoint, initCheckpointModal } from './checkpoints.js';
+import { initMissionControl } from './control.js';  // Match the export name from control.js
 
 // Export for use in SSE handler and inline onclick handlers
 window.updatePlaybookProgress = updatePlaybookProgress;
@@ -27,6 +28,10 @@ document.addEventListener('DOMContentLoaded', () => {
     initEvidenceModal();
     initSettingsModal();
     initCheckpointModal();
+    initMissionControl();  // NEW: Initialize pause/stop/send controls
+
+    // Restore sidebar state from localStorage
+    restoreSidebarState();
 
     console.log('✅ AI Hunter UI initialized');
 });

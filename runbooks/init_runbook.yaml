@@ -14,6 +14,7 @@ steps:
     name: "Navigate to Target"
     action: "navigate"
     description: "Open target URL in browser using SoM Browser"
+    agent_mode: "agent_guided"
     tool: "som_browser"
     outputs:
       - "screenshot_path"
@@ -23,6 +24,7 @@ steps:
     name: "Capture Set-of-Marks"
     action: "capture_screenshot"
     description: "Take screenshot with interactive element markers (Set-of-Marks)"
+    agent_mode: "agent_guided"
     tool: "som_browser"
     depends_on: ["nav_target"]
     outputs:
@@ -37,6 +39,7 @@ steps:
     name: "Analyze HTML Source"
     action: "view_source"
     description: "Extract and analyze static HTML source code"
+    agent_mode: "agent_guided"
     tool: "som_browser"
     depends_on: ["nav_target"]
     findings_to_log:

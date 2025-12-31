@@ -553,6 +553,21 @@ class Database:
                     status, iteration_id
                 )
     
+    async def get_mission_iterations(self, mission_id: int) -> List[dict]:
+        """Get all iterations for a mission (for LLM context)"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, iteration_number, plan, status, findings_summary, 
+                       created_at, started_at, completed_at
+                FROM iterations
+                WHERE mission_id = $1
+                ORDER BY iteration_number ASC
+                """,
+                mission_id
+            )
+            return [dict(row) for row in rows]
+    
     async def get_all_iteration_summaries(self, mission_id: int) -> str:
         """Get concatenated summaries of all completed iterations"""
         async with self.pool.acquire() as conn:
@@ -571,3 +586,52 @@ class Database:
                 summaries.append(f"Iteration {row['iteration_number']}:\n{row['findings_summary']}\n")
             
             return "\n".join(summaries) if summaries else "No completed iterations yet."
+    
+    # Activity log operations
+    async def save_activity_log(
+        self,
+        mission_id: int,
+        message: str,
+        message_type: str = 'log',
+        screenshot_path: Optional[str] = None,
+        metadata: Optional[dict] = None
+    ) -> int:
+        """Save an activity feed message to database"""
+        async with self.pool.acquire() as conn:
+            log_id = await conn.fetchval(
+                """
+                INSERT INTO activity_logs 
+                (mission_id, message, message_type, screenshot_path, metadata)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id
+                """,
+                mission_id, message, message_type, screenshot_path,
+                json.dumps(metadata) if metadata else None
+            )
+        return log_id
+    
+    async def get_mission_activity_logs(
+        self, 
+        mission_id: int,
+        limit: int = 1000
+    ) -> List[Dict[str, Any]]:
+        """Get all activity logs for a mission"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, message, message_type, screenshot_path, 
+                       metadata, timestamp
+                FROM activity_logs
+                WHERE mission_id = $1
+                ORDER BY timestamp ASC
+                LIMIT $2
+                """,
+                mission_id, limit
+            )
+            results = []
+            for row in rows:
+                result = dict(row)
+                if result.get('metadata'):
+                    result['metadata'] = json.loads(result['metadata']) if isinstance(result['metadata'], str) else result['metadata']
+                results.append(result)
+            return results

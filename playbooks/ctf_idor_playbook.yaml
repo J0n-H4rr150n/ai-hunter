@@ -32,6 +32,17 @@ sequence:
       action: "proceed"  # or "wait_for_approval"
     on_failure:
       action: "abort"  # Stop playbook if init fails
+  
+  - runbook: "search_runbook"
+    stage: 1.5
+    name: "Knowledge Base Search"
+    required: true
+    description: "Search attack pattern database for IDOR techniques based on discovered endpoints"
+    hitl_checkpoint: false
+    on_complete:
+      action: "proceed"
+    on_failure:
+      action: "proceed"  # Continue even if search fails
       
   - runbook: "ctf_runbook"
     stage: 2

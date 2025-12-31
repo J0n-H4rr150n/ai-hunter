@@ -28,6 +28,7 @@ from memory.finding_repository import FindingRepository
 from backend.database import Database
 from backend.redis_manager import RedisManager
 from core.state_manager import StateManager
+from tools.som_browser import SoMBrowser  # Add browser import
 from core.playbook_manager import PlaybookManager
 from core.playbook_executor import PlaybookExecutor
 
@@ -530,7 +531,7 @@ async def list_playbooks():
     """List all available playbooks"""
     try:
         playbook_mgr = PlaybookManager()
-        playbooks = playbook_mgr.list_available_playbooks()
+        playbooks = playbook_mgr.get_available_playbooks()
         return playbooks
     except Exception as e:
         backend_logger.error(f"Failed to list playbooks: {e}")
@@ -578,7 +579,7 @@ async def start_playbook_mission(mission: PlaybookMissionStart):
     tracker = AgentTracker(agent_id=f"mission_{mission_id}")
     repo = FindingRepository()
     quota = QuotaManager(agent_id=f"mission_{mission_id}")
-    state_mgr = StateManager()
+    state_mgr = StateManager(db)  # Fix: pass db
     
     # Create tool approval queue for HITL
     tool_approval_queue = asyncio.Queue()
@@ -632,17 +633,68 @@ async def execute_playbook_mission(
     state_mgr: StateManager,
     tool_approval_queue: asyncio.Queue
 ):
-    """Execute a playbook-based mission in the background"""
+    """Execute a playbook-based mission with step-level LLM planning"""
     try:
         backend_logger.info(f"[Mission {mission_id}] Executing playbook: {playbook_name}")
         
-        # Create PlaybookExecutor
+        # Create AutonomousLoop for browser/tool access
+        auto_loop = AutonomousLoop(tracker, repo, quota, db)
+        auto_loop.mission_id = mission_id
+        
+        # Initialize browser BEFORE passing to PlaybookExecutor
+        backend_logger.info("[Playbook] Initializing browser...")
+        auto_loop.browser = SoMBrowser(headless=True)
+        auto_loop.tracker.set_browser(auto_loop.browser)
+        
+        # Get event loop for callbacks
+        main_loop = asyncio.get_event_loop()
+        
+        # Set up UI callback
+        def ui_log_callback(message: str, screenshot: dict = None):
+            asyncio.run_coroutine_threadsafe(
+                publish_mission_update(mission_id, message, "mission_log", screenshot),
+                main_loop
+            )
+        
+        auto_loop.ui_callback = ui_log_callback
+        
+        # Load settings for HITL
+        settings = await db.get_settings(mission_id)
+        hitl_enabled = settings.get('hitl_enabled', {}).get('enabled', False) if isinstance(settings.get('hitl_enabled'), dict) else settings.get('hitl_enabled', False)
+        auto_approve_tools = settings.get('auto_approve_tools', ['view_raw_source', 'view_dom', 'check_network'])
+        
+        # Tool approval callback
+        async def async_tool_approval(tool_name: str, tool_inputs: dict, context: dict) -> dict:
+            if not hitl_enabled or tool_name in auto_approve_tools:
+                return {'approved': True, 'edited_inputs': tool_inputs, 'feedback': None}
+            
+            await redis_mgr.publish_event("missions:all", {
+                "type": "tool_approval_request",
+                "approval_id": f"tool_{mission_id}_{datetime.utcnow().timestamp()}",
+                "mission_id": mission_id,
+                "tool_name": tool_name,
+                "tool_inputs": tool_inputs,
+                "context": context,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+            approval_response = await tool_approval_queue.get()
+            return approval_response
+        
+        def sync_tool_approval(tool_name: str, tool_inputs: dict, context: dict) -> dict:
+            future = asyncio.run_coroutine_threadsafe(
+                async_tool_approval(tool_name, tool_inputs, context), 
+                main_loop
+            )
+            return future.result()
+        
+        auto_loop.tool_approval_callback = sync_tool_approval
+        auto_loop.hitl_enabled = hitl_enabled
+        
+        # Create PlaybookExecutor with initialized AutonomousLoop
         executor = PlaybookExecutor(
-            playbook_manager=PlaybookManager(),
-            state_manager=state_mgr,
-            tracker=tracker,
-            repo=repo,
-            quota=quota
+            autonomous_loop=auto_loop,  # Now has browser!
+            db=db
         )
         
         # Store executor in active missions for checkpoint access

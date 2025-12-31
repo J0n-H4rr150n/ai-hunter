@@ -1,0 +1,155 @@
+---
+# Search Knowledge Base Runbook
+# Query attack pattern database when stuck or seeking new techniques
+
+metadata:
+  name: "Knowledge Base Search"
+  version: "1.0"
+  description: "Perform semantic search on attack pattern database to discover new techniques and hypotheses"
+  author: "AI Hunter"
+  tags: [planning, knowledge-retrieval, rag, brainstorming]
+
+steps:
+  - id: "analyze_progress"
+    name: "Analyze Current Progress"
+    agent_mode: "agent_guided"
+    description: |
+      Review all mission findings and identify current state:
+      - What has been tried so far?
+      - What worked and what didn't?
+      - Are we making progress or stuck?
+      - What patterns have we observed?
+      
+      Generate a concise summary of:
+      - Discovered endpoints and their behaviors
+      - Response patterns (200s, 403s, 404s, etc.)
+      - Parameters found
+      - Any anomalies or interesting behaviors
+    outputs:
+      - "progress_summary"
+      - "stuck_indicators"
+      
+  - id: "formulate_search_query"
+    name: "Formulate Search Query"
+    agent_mode: "agent_guided"
+    description: |
+      Based on progress analysis, formulate a semantic search query for the pattern database.
+      
+      Good queries describe:
+      - The obstacle: "uniform 403 errors across all IDs"
+      - The structure: "multiple endpoints with same ID parameter"
+      - The context: "appears to track user interactions"
+      - The goal: "access other users' resources"
+      
+      Example queries:
+      - "Cannot access resources despite fuzzing, all return 403, suspect state-based authorization"
+      - "Multiple parameters with same name, inconsistent parsing suspected"
+      - "Race condition suspected, async operations observed"
+    outputs:
+      - "search_query"
+      - "relevant_tags"
+      
+  - id: "search_pattern_database"
+    name: "Search Attack Pattern Database"
+    action: "search_rag"
+    tool: "pattern_search"
+    description: |
+      Perform vector similarity search on attack pattern database.
+      
+      Returns top 3 most relevant patterns based on semantic similarity to:
+      - Search query
+      - Current findings
+      - Observed behaviors
+      
+      Each result includes:
+      - Pattern name and description
+      - Similarity score
+      - Attack sequence steps
+      - Indicators to look for
+      - Example scenarios
+    inputs:
+      query: "${search_query}"
+      findings: "${all_findings}"
+      tags: "${relevant_tags}"
+      top_k: 3
+      similarity_threshold: 0.5
+    outputs:
+      - "retrieved_patterns"
+      
+  - id: "synthesize_patterns"
+    name: "Synthesize Retrieved Patterns"
+    agent_mode: "agent_guided"
+    description: |
+      Review retrieved attack patterns and synthesize into actionable plan.
+      
+      For each pattern, analyze:
+      1. Relevance: Does it match our current situation?
+      2. Applicability: Can we apply this to our target?
+      3. Requirements: What do we need to execute this?
+      4. Adaptation: How to map pattern steps to our target?
+      
+      Generate:
+      - Hypothesis based on pattern
+      - Specific steps adapted to current target
+      - Expected outcomes
+      - Confidence level
+    outputs:
+      - "hypotheses"
+      - "adapted_steps"
+      - "confidence_scores"
+      
+  - id: "recommend_actions"
+    name: "Recommend Next Actions"
+    agent_mode: "agent_guided"
+    description: |
+      Based on synthesized patterns, recommend specific next actions.
+      
+      Options:
+      1. Execute pattern steps directly (if clear match)
+      2. Load specialized runbook (if pattern suggests specific technique)
+      3. Generate custom iteration plan (if needs adaptation)
+      4. Request human guidance (if low confidence)
+      
+      Provide:
+      - Recommended action
+      - Rationale
+      - Estimated success probability
+      - Alternative approaches if primary fails
+    outputs:
+      - "recommended_action"
+      - "recommended_runbook"
+      - "custom_plan"
+      
+  - id: "record_pattern_usage"
+    name: "Record Pattern Usage"
+    action: "record_usage"
+    tool: "pattern_tracker"
+    description: |
+      Record which patterns were retrieved and will be attempted.
+      This helps track pattern effectiveness over time.
+    inputs:
+      pattern_ids: "${retrieved_patterns.ids}"
+      mission_id: "${mission_id}"
+    outputs:
+      - "usage_recorded"
+
+# Triggers for when to run this runbook
+triggers:
+  - name: "Progress Stalled"
+    condition: "No new findings in last 3 iterations"
+    
+  - name: "Uniform Responses"
+    condition: "All fuzzing attempts show identical responses"
+    
+  - name: "Exhausted Basic Techniques"
+    condition: "Standard IDOR/SQL injection attempts failed"
+    
+  - name: "Explicit Request"
+    condition: "User or agent requests knowledge search"
+
+# Expected outcomes
+expected_outcomes:
+  - "New attack hypotheses based on proven patterns"
+  - "Specific runbooks or techniques to try"
+  - "Better understanding of target behavior"
+  - "Higher probability of finding vulnerabilities"
