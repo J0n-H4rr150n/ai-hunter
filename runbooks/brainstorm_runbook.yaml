@@ -250,6 +250,7 @@ steps:
 outputs:
   - id: "next_actions"
     name: "Next Actions Determined"
+    agent_mode: "agent_guided"
     description: "Clear actionable next steps based on analysis"
     output_types:
       - "next_playbook_recommendation"
@@ -259,6 +260,7 @@ outputs:
   
   - id: "knowledge_base_update"
     name: "Update Knowledge Base"
+    agent_mode: "agent_guided"
     description: "Store insights and patterns for future missions"
     stored_items:
       - "Successful attack patterns for this tech stack"

@@ -1,4 +1,5 @@
 import time
+import asyncio
 from core.planner import Planner
 from core.workflow import MissionWorkflow, WorkflowState
 from core.human_interface import HumanInterface
@@ -121,7 +122,8 @@ class AutonomousLoop:
         
         # 2. Initialize browser (headless mode for Docker)
         self.log_to_ui("[Auto] 🌐 Launching browser...")
-        self.browser = SoMBrowser(headless=True)
+        loop = asyncio.get_event_loop()
+        self.browser = await loop.run_in_executor(None, lambda: SoMBrowser(headless=True))
         self.tracker.set_browser(self.browser)
         
         # 3. Generate Plan using Gemini
@@ -237,7 +239,8 @@ class AutonomousLoop:
         
         # Initialize browser (headless mode for Docker)
         self.log_to_ui("[Playbook] 🌐 Launching browser...")
-        self.browser = SoMBrowser(headless=True)
+        loop = asyncio.get_event_loop()
+        self.browser = await loop.run_in_executor(None, lambda: SoMBrowser(headless=True))
         self.tracker.set_browser(self.browser)
         
         # Initialize playbook executor

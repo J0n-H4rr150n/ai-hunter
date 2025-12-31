@@ -165,6 +165,7 @@ steps:
 analysis:
   - id: "aggregate_findings"
     name: "Aggregate All Findings"
+    agent_mode: "agent_guided"
     description: "Compile all recon data into structured format"
     actions:
       - "Categorize findings by type"
@@ -174,6 +175,7 @@ analysis:
   
   - id: "generate_iteration_plan"
     name: "Generate Iteration 1 Plan"
+    agent_mode: "agent_guided"
     description: "Create tactical plan for first testing iteration based on reconnaissance"
     inputs:
       - "All findings from reconnaissance steps"

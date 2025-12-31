@@ -333,6 +333,11 @@ class PlaybookExecutor:
             self._log("[Playbook] 📋 Loading playbook configuration...")
             playbook_info = self.manager.start_playbook(playbook_name, goal, skip_validation=True)
             
+            # Load and store the full playbook definition
+            playbook = self.manager.load_playbook(playbook_name)
+            self.context.playbook = playbook
+            self.context.playbook_name = playbook_name
+            
             total_stages = playbook_info['total_stages']
             self._log(f"[Playbook] 📊 Total stages: {total_stages}")
             
@@ -611,11 +616,30 @@ class PlaybookExecutor:
     async def _execute_step_with_tools(self, step: dict, execution_context: dict) -> Dict[str, Any]:
         """Execute step using ToolMapper only (no agent involvement)"""
         
-        action = step['action']
+        action = step.get('action')
+        
+        # Handle agent_guided steps without explicit action
+        if not action:
+            agent_mode = step.get('agent_mode')
+            if agent_mode == 'agent_guided':
+                # This step requires LLM guidance, skip tool execution
+                self._log(f"[Step] 🤖 Agent-guided step (no direct tool action)")
+                return {
+                    '_step_id': step['id'],
+                    '_agent_mode': 'agent_guided',
+                    '_note': 'Step requires LLM guidance for execution'
+                }
+            else:
+                raise ValueError(f"Step '{step.get('name')}' missing 'action' field")
         
         try:
-            # Execute action using ToolMapper
-            findings = self.tool_mapper.execute_action(action, step, execution_context)
+            # Execute action using ToolMapper in thread pool (for Playwright sync API compatibility)
+            findings = await asyncio.to_thread(
+                self.tool_mapper.execute_action,
+                action,
+                step,
+                execution_context
+            )
             
             # Validate findings match expected schema (optional)
             expected_findings = step.get('findings_to_log', [])
@@ -625,18 +649,13 @@ class PlaybookExecutor:
             return findings
             
         except ToolMapperError as e:
-            self._log(f"[Step] ⚠️  Tool mapping error: {e}")
-            # Return error findings instead of failing
-            return {
-                '_error': str(e),
-                '_step_id': step['id'],
-                '_action': action,
-                '_failed': True
-            }
+            self._log(f"[Step] ❌ Tool mapping error: {e}")
+            # Raise exception to stop execution
+            raise RunbookExecutionError(f"Step '{step.get('name')}' failed: {e}")
         
         except Exception as e:
             self._log(f"[Step] ❌ Unexpected error: {e}")
-            raise
+            raise RunbookExecutionError(f"Step '{step.get('name')}' failed: {e}")
     
     async def _execute_step_with_agent_guidance(self, step: dict, runbook: dict, 
                                                execution_context: dict) -> Dict[str, Any]:

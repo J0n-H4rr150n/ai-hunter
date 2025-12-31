@@ -241,8 +241,8 @@ class RunbookValidator:
         for i, step in enumerate(steps):
             location = f"steps[{i}]"
             
-            # Required fields
-            required_fields = ['id', 'name', 'action', 'description']
+            # Always required fields
+            required_fields = ['id', 'name', 'description']
             for field in required_fields:
                 if field not in step:
                     result.add_error(
@@ -251,6 +251,16 @@ class RunbookValidator:
                         location=location,
                         suggestion=f"Add '{field}:' to the step"
                     )
+            
+            # Action is required unless step is agent_guided
+            agent_mode = step.get('agent_mode')
+            if agent_mode != 'agent_guided' and 'action' not in step:
+                result.add_error(
+                    "MissingStepField",
+                    f"Step missing required field: 'action' (not needed for agent_guided steps)",
+                    location=location,
+                    suggestion="Add 'action:' to the step or set 'agent_mode: agent_guided'"
+                )
             
             # Check for duplicate IDs
             if 'id' in step:

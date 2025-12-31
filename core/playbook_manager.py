@@ -4,8 +4,11 @@ Orchestrates sequences of runbooks for specific testing objectives
 """
 
 import yaml
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
+logger = logging.getLogger(__name__)
 from core.runbook_engine import RunbookParser, RunbookExecutor, RunbookFlowManager
 from core.validation import PlaybookValidator, RunbookValidator, ValidationResult
 

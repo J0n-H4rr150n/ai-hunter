@@ -70,10 +70,16 @@ class RunbookParser:
         
         # Validate each step
         for step in runbook['steps']:
-            required_step_fields = ['id', 'name', 'action', 'description']
+            # Always required fields
+            required_step_fields = ['id', 'name', 'description']
             for field in required_step_fields:
                 if field not in step:
                     raise ValueError(f"Step missing required field: {field}")
+            
+            # Action is required unless step is agent_guided
+            agent_mode = step.get('agent_mode')
+            if agent_mode != 'agent_guided' and 'action' not in step:
+                raise ValueError(f"Step missing required field: 'action' (not needed for agent_guided steps)")
     
     def get_step(self, runbook: dict, step_id: str) -> Optional[Dict]:
         """Get a specific step by ID"""
@@ -123,7 +129,10 @@ class RunbookParser:
         
         for i, step in enumerate(steps, 1):
             formatted += f"\n### Step {i}: {step['name']}\n"
-            formatted += f"**Action:** {step['action']}\n"
+            if 'action' in step:
+                formatted += f"**Action:** {step['action']}\n"
+            elif step.get('agent_mode') == 'agent_guided':
+                formatted += f"**Mode:** Agent-guided (LLM decides actions)\n"
             formatted += f"**Description:** {step['description']}\n"
             
             if 'tool' in step:

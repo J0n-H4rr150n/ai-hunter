@@ -495,9 +495,8 @@ async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: st
         auto_loop.tool_approval_callback = sync_tool_approval
         auto_loop.hitl_enabled = hitl_enabled
         
-        # Run mission in thread pool (since autonomous_loop is synchronous)
-        await asyncio.to_thread(
-            auto_loop.start_mission,
+        # Run mission (now properly async)
+        await auto_loop.start_mission(
             f"Audit {target_url} for vulnerabilities",
             target_url,
             instructions
@@ -637,13 +636,19 @@ async def execute_playbook_mission(
     try:
         backend_logger.info(f"[Mission {mission_id}] Executing playbook: {playbook_name}")
         
+        # Load playbook to get goal/metadata
+        playbook_mgr = PlaybookManager()
+        playbook = playbook_mgr.load_playbook(playbook_name)
+        goal = playbook.get("metadata", {}).get("description", f"Execute {playbook_name}")
+        
         # Create AutonomousLoop for browser/tool access
         auto_loop = AutonomousLoop(tracker, repo, quota, db)
         auto_loop.mission_id = mission_id
         
-        # Initialize browser BEFORE passing to PlaybookExecutor
+        # Initialize browser in thread pool (Playwright sync API can't run in asyncio loop)
         backend_logger.info("[Playbook] Initializing browser...")
-        auto_loop.browser = SoMBrowser(headless=True)
+        loop = asyncio.get_event_loop()
+        auto_loop.browser = await loop.run_in_executor(None, lambda: SoMBrowser(headless=True))
         auto_loop.tracker.set_browser(auto_loop.browser)
         
         # Get event loop for callbacks
@@ -746,14 +751,13 @@ async def execute_playbook_mission(
         executor.tool_approval_callback = sync_tool_approval
         executor.hitl_enabled = True  # Can be configured per playbook
         
-        # Execute playbook (synchronous, run in thread pool)
-        result = await asyncio.to_thread(
-            executor.execute_playbook,
+        # Execute playbook (async)
+        result = await executor.execute_playbook(
             playbook_name,
-            {
-                "target_url": target_url,
-                "instructions": instructions
-            },
+            goal=goal,
+            target_url=target_url,
+            mission_id=mission_id,
+            instructions=instructions,
             progress_callback=progress_callback
         )
         

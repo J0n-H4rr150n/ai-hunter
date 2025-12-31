@@ -236,6 +236,7 @@ steps:
 analysis:
   - id: "risk_assessment"
     name: "Assess IDOR Risk Level"
+    agent_mode: "agent_guided"
     description: "Calculate overall risk based on findings"
     criteria:
       - "Can access other users' data? (Horizontal escalation)"
@@ -250,6 +251,7 @@ analysis:
   
   - id: "recommend_next_steps"
     name: "Recommend Next Testing Phase"
+    agent_mode: "agent_guided"
     description: "Based on findings, suggest which runbook to execute next"
     logic:
       - "IF admin_access_gained THEN privilege_escalation_runbook"
