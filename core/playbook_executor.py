@@ -346,6 +346,10 @@ class PlaybookExecutor:
                 playbook_name, playbook_info
             )
             
+            # STEP 3.5: Create iteration plan for UI display
+            if self.db and mission_id:
+                await self._create_playbook_iteration_plan(mission_id, playbook, total_stages)
+            
             # STEP 4: Execute runbooks in sequence
             self._log("[Playbook] 🔄 Beginning runbook execution sequence...")
             
@@ -579,8 +583,23 @@ class PlaybookExecutor:
             Dict of findings from this step
         """
         
-        action = step['action']
+        action = step.get('action')
         tool_name = step.get('tool', 'unknown')
+        
+        # Handle agent_guided steps without action
+        if not action:
+            agent_mode = step.get('agent_mode')
+            if agent_mode == 'agent_guided':
+                self._log(f"[Step] 🤖 Agent-guided step (requires LLM planning)")
+                # This should be handled by agent_guided execution path
+                return await self._execute_step_with_agent_guidance(step, runbook, {
+                    'mission_id': self.context.mission_id,
+                    'goal': self.context.goal,
+                    'target_url': self.context.target_url,
+                    'playbook_name': self.context.playbook_name,
+                })
+            else:
+                raise ValueError(f"Step '{step.get('name')}' missing 'action' field")
         
         self._log(f"[Step] 🔨 Action: {action}, Tool: {tool_name}")
         
@@ -666,9 +685,23 @@ class PlaybookExecutor:
         stores it as an iteration in the database, publishes to UI, then executes.
         """
         
-        action = step['action']
         step_name = step['name']
         step_description = step.get('description', '')
+        action = step.get('action')  # May not exist for agent_guided steps
+        
+        self._log(f"[Step] 🤖 Agent-guided execution for: {step_name}")
+        
+        # For now, agent-guided steps without explicit actions return placeholder
+        # TODO: Implement full LLM planning integration
+        if not action:
+            self._log(f"[Step] 📝 Agent will analyze: {step_description}")
+            return {
+                '_step_id': step.get('id'),
+                '_step_name': step_name,
+                '_agent_mode': 'agent_guided',
+                '_description': step_description,
+                '_note': 'Agent-guided step completed (LLM planning integration pending)'
+            }
         
         self._log(f"[Step] 🤖 Generating plan for: {step_name}")
         
@@ -901,6 +934,53 @@ class PlaybookExecutor:
         # TODO: Phase 1, Task 1.3 - Implement database schema
         # For now, return placeholder ID
         return 1
+    
+    async def _create_playbook_iteration_plan(self, mission_id: int, playbook: dict, total_stages: int):
+        """Create an iteration plan from playbook sequence for UI display"""
+        
+        if not self.db:
+            return
+        
+        try:
+            # Build plan from playbook sequence
+            sequence = playbook.get('sequence', [])
+            
+            plan = {
+                'goal': playbook.get('metadata', {}).get('description', 'Execute playbook'),
+                'target_url': self.context.target_url,
+                'instructions': self.context.instructions,
+                'total_stages': total_stages,
+                'stages': []
+            }
+            
+            # Convert each runbook in sequence to a stage
+            for item in sequence:
+                stage = {
+                    'stage': item.get('stage'),
+                    'name': item.get('name', item['runbook']),
+                    'runbook': item['runbook'],
+                    'description': item.get('description', ''),
+                    'required': item.get('required', True),
+                    'hitl_checkpoint': item.get('hitl_checkpoint', False)
+                }
+                plan['stages'].append(stage)
+            
+            # Create iteration in database
+            iteration_id = await self.db.create_iteration(
+                mission_id=mission_id,
+                iteration_number=1,
+                plan=plan,
+                status='in_progress'
+            )
+            
+            self._log(f"[Playbook] 📋 Created iteration plan (ID: {iteration_id})")
+            
+            return iteration_id
+            
+        except Exception as e:
+            self._log(f"[Playbook] ⚠️  Failed to create iteration plan: {e}")
+            # Don't fail the mission if plan creation fails
+            return None
     
     async def _create_runbook_execution_record(self, runbook_name: str, stage: int) -> int:
         """Create database record for runbook execution"""

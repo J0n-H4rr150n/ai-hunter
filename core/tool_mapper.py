@@ -79,6 +79,10 @@ class ToolMapper:
         """Set or update fuzzer instance"""
         self.fuzzer = fuzzer
     
+    def _log(self, message: str):
+        """Simple logging helper"""
+        print(f"[ToolMapper] {message}")
+    
     def _build_action_map(self) -> Dict[str, Callable]:
         """Build the action → tool method mapping registry"""
         return {
@@ -110,6 +114,7 @@ class ToolMapper:
             # Analysis actions (use existing repo methods)
             'compile_findings': self._action_compile_findings,
             'pattern_search': self._action_pattern_search,
+            'search_rag': self._action_search_rag,
             'review_findings': self._action_review_findings,
             'extract_parameters': self._action_extract_parameters,
             
@@ -501,6 +506,21 @@ class ToolMapper:
             'patterns_searched': len(patterns),
             'patterns': patterns,
             'matches_found': 0  # Placeholder
+        }
+    
+    def _action_search_rag(self, step: dict, context: dict) -> Dict[str, Any]:
+        """Search the RAG/knowledge base for relevant attack patterns"""
+        query = step.get('query') or step.get('search_query') or context.get('search_query', '')
+        
+        # TODO: Implement actual RAG search when embedding service is available
+        self._log(f"[RAG] Searching for: {query[:100]}")
+        
+        return {
+            'search_performed': True,
+            'query': query,
+            'results_found': 0,
+            'patterns_retrieved': [],
+            'note': 'RAG search placeholder - embeddings disabled or not configured'
         }
     
     def _action_review_findings(self, step: dict, context: dict) -> Dict[str, Any]:
