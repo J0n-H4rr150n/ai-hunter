@@ -1259,6 +1259,68 @@ async def approve_iteration(mission_id: int, iteration_num: int, approval: PlanA
     
     return {"status": "approved", "iteration_id": iteration['id']}
 
+async def run_iteration_task(mission_id: int, auto_loop: AutonomousLoop, iteration_id: int, plan: dict):
+    """
+    Execute one iteration of an existing mission.
+
+    "Continue Hunting" used to stop at creating a pending iteration row - the plan
+    was generated and then nothing ran it, so the mission looked dead. This is the
+    missing execution half, with the same outcome handling as a full mission.
+    """
+    owns_browser = False
+    try:
+        mission = await db.get_mission(mission_id)
+        target_url = mission["target_url"]
+
+        if auto_loop.browser is None:
+            loop = asyncio.get_running_loop()
+            auto_loop.browser = await loop.run_in_executor(
+                None, lambda: ThreadedBrowser(lambda: SoMBrowser(headless=True))
+            )
+            auto_loop.tracker.set_browser(auto_loop.browser)
+            owns_browser = True
+
+        auto_loop.planner.set_mission(
+            f"Audit {target_url}", target_url, mission.get("instructions")
+        )
+        for tool_name, limit in (plan.get("budgets") or {}).items():
+            auto_loop.quota.set_limit(tool_name, limit)
+
+        await db.update_mission_status(mission_id, "running")
+        await auto_loop.run_iteration(iteration_id, plan)
+
+        await db.update_mission_status(mission_id, "completed")
+        await events.publish_event("missions:all", {
+            "type": "mission_complete",
+            "mission_id": mission_id,
+            "summary": f"Iteration complete",
+        })
+
+    except asyncio.CancelledError:
+        backend_logger.info(f"[Mission {mission_id}] iteration cancelled")
+        await db.update_mission_status(mission_id, "stopped")
+        raise
+    except MissionStopped:
+        await db.update_mission_status(mission_id, "stopped")
+    except Exception as e:
+        backend_logger.error(f"[Mission {mission_id}] iteration failed: {e}", exc_info=True)
+        await db.update_mission_status(mission_id, "failed")
+        await events.publish_event("missions:all", {
+            "type": "mission_failed",
+            "mission_id": mission_id,
+            "error": f"{type(e).__name__}: {e}",
+            "traceback": traceback.format_exc(),
+        })
+    finally:
+        if owns_browser and auto_loop.browser is not None:
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, auto_loop.browser.close)
+            except Exception as e:
+                backend_logger.warning(f"[Mission {mission_id}] browser close: {e}")
+            auto_loop.browser = None
+        active_missions.pop(mission_id, None)
+
+
 @app.post("/api/missions/{mission_id}/replan")
 async def replan_mission(mission_id: int):
     """
@@ -1324,7 +1386,22 @@ async def replan_mission(mission_id: int):
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
         
-        return {"status": "success", "iteration_id": next_iteration_id, "iteration_number": current_iteration_num + 1}
+        # Actually run it. Planning without executing is what made the button look
+        # like it did nothing beyond printing a message.
+        iterations = await db.get_iterations_for_mission(mission_id)
+        new_iteration = next((i for i in iterations if i["id"] == next_iteration_id), None)
+        plan = (new_iteration or {}).get("plan") or {}
+
+        task = asyncio.create_task(
+            run_iteration_task(mission_id, auto_loop, next_iteration_id, plan)
+        )
+        task.add_done_callback(
+            log_unhandled(backend_logger, f"mission {mission_id} iteration {current_iteration_num + 1}")
+        )
+        active_missions[mission_id]["task"] = task
+
+        return {"status": "success", "iteration_id": next_iteration_id,
+                "iteration_number": current_iteration_num + 1, "running": True}
     except Exception as e:
         backend_logger.error(f"Replan failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

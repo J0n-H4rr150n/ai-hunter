@@ -1,6 +1,7 @@
 import { BACKEND_URL, state, fmtDateTime } from './config.js';
 import { addToFeed, resetFeedScroll, scrollFeedToBottom } from './feed.js';
 import { connectToSSE } from './sse.js';
+import { refreshActiveTab } from './tabs.js';
 
 export function updateMissionStatus(data) {
     console.log('Mission status update:', data);
@@ -15,14 +16,14 @@ export function updateMissionStatus(data) {
 
 // Status badge styling shared by the selector and the feed header.
 const STATUS_STYLE = {
-    running:   'bg-blue-900 text-blue-200',
-    executing: 'bg-blue-900 text-blue-200',
-    planning:  'bg-yellow-900 text-yellow-200',
-    paused:    'bg-yellow-900 text-yellow-200',
-    completed: 'bg-green-900 text-green-200',
-    stopped:   'bg-gray-700 text-gray-300',
-    aborted:   'bg-orange-900 text-orange-200',
-    failed:    'bg-red-900 text-red-200',
+    running: 'accent', executing: 'accent', planning: 'warn', paused: 'warn',
+    completed: 'good', stopped: '', aborted: 'warn', failed: 'bad',
+};
+
+// The header dot spins while something is running, mirroring Arena's bell.
+const RUN_DOT = {
+    running: 'running', executing: 'running', planning: 'running',
+    paused: 'warn', completed: 'good', failed: 'bad', aborted: 'bad', stopped: '',
 };
 
 function hostOf(url) {
@@ -69,17 +70,21 @@ export function setFeedSession(mission) {
     const badge = document.getElementById('feed-session-status');
     if (!label || !badge) return;
 
+    const dot = document.getElementById('run-dot');
+
     if (!mission) {
-        label.textContent = 'Live — following the newest mission';
+        label.textContent = 'Live — newest mission';
         badge.textContent = 'live';
-        badge.className = 'text-xs px-2 py-1 rounded-full bg-gray-700 text-gray-300 shrink-0';
+        badge.className = 'pill';
+        if (dot) dot.className = '';
         return;
     }
 
-    label.textContent = `Mission #${mission.id} · ${mission.target_url} · started ${fmtDateTime(mission.created_at)}`;
+    label.textContent = `#${mission.id} · ${hostOf(mission.target_url)}`;
+    label.title = `${mission.target_url} · started ${fmtDateTime(mission.created_at)}`;
     badge.textContent = mission.status;
-    badge.className =
-        `text-xs px-2 py-1 rounded-full shrink-0 ${STATUS_STYLE[mission.status] || 'bg-gray-700 text-gray-300'}`;
+    badge.className = `pill ${STATUS_STYLE[mission.status] || ''}`;
+    if (dot) dot.className = RUN_DOT[mission.status] || '';
 }
 
 /**
@@ -165,6 +170,9 @@ export async function selectMission(missionId) {
 
         const active = ['planning', 'running', 'executing', 'paused'].includes(mission.status);
         updateMissionControls(active ? missionId : null);
+
+        // Findings/evidence/tools belong to the selected session, not the last one.
+        refreshActiveTab();
 
         try {
             const iterations = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}/iterations`)).json();

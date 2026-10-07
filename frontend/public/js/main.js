@@ -7,6 +7,7 @@ import { loadSettings, initSettingsModal } from './settings.js';
 import { switchSidebarTab, restoreSidebarState } from './plan.js';
 import { pausePlaybook, resumePlaybook, createCheckpoint, showCheckpoints, restoreCheckpoint, initCheckpointModal } from './checkpoints.js';
 import { initMissionControl } from './control.js';  // Match the export name from control.js
+import { initTabs, showTab } from './tabs.js';
 
 // Export for use in SSE handler and inline onclick handlers
 window.updatePlaybookProgress = updatePlaybookProgress;
@@ -16,6 +17,7 @@ window.resumePlaybook = resumePlaybook;
 window.createCheckpoint = createCheckpoint;
 window.showCheckpoints = showCheckpoints;
 window.restoreCheckpoint = restoreCheckpoint;
+window.showTab = showTab;
 
 document.addEventListener('DOMContentLoaded', () => {
     // Initialize all modules
@@ -29,6 +31,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initSettingsModal();
     initCheckpointModal();
     initMissionControl();  // NEW: Initialize pause/stop/send controls
+    initTabs();
 
     // Restore sidebar state from localStorage
     restoreSidebarState();

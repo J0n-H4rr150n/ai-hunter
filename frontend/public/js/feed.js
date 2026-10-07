@@ -4,8 +4,10 @@ export function addToFeed(data) {
     const feedContent = document.getElementById('feed-content');
     const timestamp = fmtTime(data.timestamp);
 
+    // Accent the left edge by kind, so errors and successes are scannable.
+    const KIND = { error: 'err', mission_failed: 'err', success: 'ok', mission_complete: 'ok' };
     const entry = document.createElement('div');
-    entry.className = 'p-3 bg-gray-700 rounded-lg border-l-4 border-blue-500';
+    entry.className = `item ${KIND[data.type] || ''}`.trim();
 
     let screenshotHTML = '';
     if (data.screenshot) {
@@ -14,27 +16,22 @@ export function addToFeed(data) {
             : `data:image/png;base64,${data.screenshot.data}`;
 
         screenshotHTML = `
-            <div class="mt-2 mb-2">
-                <img src="${imgSrc}" 
-                     alt="Screenshot" 
-                     class="max-w-full h-auto rounded border border-gray-600 cursor-pointer hover:border-blue-400 transition"
+            <div style="margin:.4rem 0">
+                <img src="${imgSrc}" alt="Screenshot" loading="lazy"
+                     style="max-width:100%;border-radius:8px;border:1px solid var(--line);cursor:pointer"
                      onclick="window.open(this.src)"
-                     onerror="console.error('Failed to load screenshot:', this.src); this.src=''; this.alt='[Screenshot failed to load]';"
-                     title="Click to view full size - ${data.screenshot.path}">
-                <p class="text-xs text-gray-500 mt-1">${data.screenshot.path}</p>
-            </div>
-        `;
+                     onerror="this.replaceWith(Object.assign(document.createElement('p'),{className:'k',textContent:'[screenshot failed to load]'}))"
+                     title="${data.screenshot.path || ''}">
+                <p class="k">${data.screenshot.path || ''}</p>
+            </div>`;
     }
 
     entry.innerHTML = `
-        <div class="flex justify-between items-start">
-            <div class="flex-1">
-                <p class="text-sm text-gray-300">${data.message}</p>
-                ${screenshotHTML}
-            </div>
-            <span class="text-xs text-gray-500 ml-2">${timestamp}</span>
+        <div class="item-head">
+            <div style="flex:1;min-width:0">${data.message ?? ''}</div>
+            <span class="item-time">${timestamp}</span>
         </div>
-    `;
+        ${screenshotHTML}`;
 
     feedContent.appendChild(entry);
 
@@ -76,8 +73,7 @@ function renderJumpPill() {
     if (!pill || !label) return;
 
     if (state.followFeed) {
-        pill.classList.add('hidden');
-        pill.classList.remove('flex');
+        pill.classList.remove('show');
         return;
     }
 
@@ -85,8 +81,7 @@ function renderJumpPill() {
     label.textContent = n > 0
         ? `${n} new ${n === 1 ? 'entry' : 'entries'}`
         : 'Jump to latest';
-    pill.classList.remove('hidden');
-    pill.classList.add('flex');
+    pill.classList.add('show');
 }
 
 // Called when the feed is rebuilt (switching mission sessions).
