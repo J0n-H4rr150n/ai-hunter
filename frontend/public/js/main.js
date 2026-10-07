@@ -1,7 +1,7 @@
 // Main entry point - imports and initializes all modules
 import { connectToSSE } from './sse.js';
 import { initScrollDetection } from './feed.js';
-import { loadMissionHistory, initMissionSelector, initNewMissionButton, updatePlaybookProgress } from './missions.js';
+import { loadMissionHistory, initMissionSelector, initNewMissionButton, updatePlaybookProgress, initMissionRename } from './missions.js';
 import { initEvidenceModal } from './evidence.js';
 import { loadSettings, initSettingsModal } from './settings.js';
 import { switchSidebarTab, restoreSidebarState } from './plan.js';
@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadSettings();
     loadMissionHistory();
     initMissionSelector();
+    initMissionRename();
     initNewMissionButton();
     initEvidenceModal();
     initSettingsModal();

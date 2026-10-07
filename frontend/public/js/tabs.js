@@ -19,6 +19,7 @@ export function initTabs() {
     sheet?.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
 
     document.getElementById('detail-close')?.addEventListener('click', closePanel);
+    initPanelResize();
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
         closeSheet();
@@ -189,6 +190,84 @@ export function openDetail(title, obj, { skip = [], extra = '', source = null } 
     });
 }
 
+
+
+// ---------------------------------------------------------------- resizing
+
+const PANEL_WIDTH_KEY = 'detailPanelWidth';
+const PANEL_MIN_PX = 280;
+const DEFAULT_PANEL_WIDTH = 416;        // 26rem
+
+function panelMaxPx() {
+    // Leave the list usable no matter how far the handle is dragged.
+    return Math.max(PANEL_MIN_PX, Math.round(window.innerWidth * 0.75));
+}
+
+function applyPanelWidth(px) {
+    const panel = document.getElementById('detail-panel');
+    if (!panel) return;
+    const clamped = Math.min(Math.max(px, PANEL_MIN_PX), panelMaxPx());
+    panel.style.setProperty('--panel-w', `${clamped}px`);
+    return clamped;
+}
+
+function initPanelResize() {
+    const panel = document.getElementById('detail-panel');
+    const handle = document.getElementById('detail-resize');
+    if (!panel || !handle) return;
+
+    const stored = Number(localStorage.getItem(PANEL_WIDTH_KEY));
+    applyPanelWidth(Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_PANEL_WIDTH);
+
+    let startX = 0;
+    let startWidth = 0;
+
+    const onMove = (e) => {
+        // Dragging left widens the panel, so the delta is inverted.
+        applyPanelWidth(startWidth + (startX - e.clientX));
+    };
+
+    const onUp = () => {
+        panel.classList.remove('resizing');
+        document.body.classList.remove('resizing');
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        const width = parseFloat(getComputedStyle(panel).getPropertyValue('--panel-w'));
+        if (width) localStorage.setItem(PANEL_WIDTH_KEY, String(Math.round(width)));
+    };
+
+    handle.addEventListener('pointerdown', (e) => {
+        if (!isDesktop()) return;
+        e.preventDefault();
+        startX = e.clientX;
+        startWidth = panel.getBoundingClientRect().width;
+        panel.classList.add('resizing');
+        document.body.classList.add('resizing');
+        // pointer events cover mouse, pen and touch with one path
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp, { once: true });
+    });
+
+    handle.addEventListener('dblclick', () => {
+        applyPanelWidth(DEFAULT_PANEL_WIDTH);
+        localStorage.setItem(PANEL_WIDTH_KEY, String(DEFAULT_PANEL_WIDTH));
+    });
+
+    // Keyboard: the handle is focusable, so it should be operable without a mouse.
+    handle.addEventListener('keydown', (e) => {
+        const step = e.shiftKey ? 64 : 16;
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        const current = panel.getBoundingClientRect().width;
+        const next = applyPanelWidth(current + (e.key === 'ArrowLeft' ? step : -step));
+        localStorage.setItem(PANEL_WIDTH_KEY, String(Math.round(next)));
+    });
+
+    // A stored width can exceed the viewport after the window shrinks.
+    window.addEventListener('resize', () => {
+        applyPanelWidth(panel.getBoundingClientRect().width || DEFAULT_PANEL_WIDTH);
+    });
+}
 
 // ---------------------------------------------------------------- side panel
 

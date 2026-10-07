@@ -212,8 +212,13 @@ def transform_url_for_docker(url: str) -> str:
     return url
 
 # Pydantic models
+class MissionRename(BaseModel):
+    name: Optional[str] = None
+
+
 class MissionStart(BaseModel):
     target_url: str
+    name: Optional[str] = None
     instructions: Optional[str] = None
 
 class PlaybookMissionStart(BaseModel):
@@ -403,6 +408,21 @@ async def get_mission_findings(mission_id: int):
     return results
 
 
+@app.post("/api/missions/{mission_id}/rename")
+async def rename_mission(mission_id: int, body: MissionRename):
+    """Set or clear a mission's name. An empty name falls back to the target host."""
+    if not await db.get_mission(mission_id):
+        raise HTTPException(status_code=404, detail="Mission not found")
+
+    await db.rename_mission(mission_id, body.name)
+    await events.publish_event("missions:all", {
+        "type": "mission_renamed",
+        "mission_id": mission_id,
+        "name": (body.name or "").strip() or None,
+    })
+    return {"status": "ok", "name": (body.name or "").strip() or None}
+
+
 @app.post("/api/missions/start")
 async def start_mission(mission: MissionStart):
     """Start a new autonomous mission"""
@@ -414,7 +434,8 @@ async def start_mission(mission: MissionStart):
     # Create mission in database
     mission_id = await db.create_mission(
         target_url=target_url,
-        instructions=mission.instructions
+        instructions=mission.instructions,
+        name=mission.name,
     )
     
     # Initialize components

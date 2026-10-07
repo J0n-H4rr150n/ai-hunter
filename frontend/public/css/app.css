@@ -470,3 +470,69 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
     background: var(--panel2);
 }
 .shot.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ===================== Resizable panel ===================== */
+
+#detail-panel { --panel-w: 26rem; }
+
+.resize-handle { display: none; }
+
+@media (min-width: 1024px) {
+    #detail-panel.open { flex: 0 0 var(--panel-w); width: var(--panel-w); }
+
+    /* Suppress the width transition while dragging, or the panel lags the cursor. */
+    #detail-panel.resizing { transition: none; }
+    body.resizing { cursor: col-resize; user-select: none; }
+
+    .resize-handle {
+        display: block;
+        position: absolute;
+        left: 0; top: 0; bottom: 0;
+        width: 10px;
+        margin-left: -5px;          /* straddle the border so it is easy to grab */
+        cursor: col-resize;
+        z-index: 2;
+        touch-action: none;         /* let the pointer handler own the gesture */
+    }
+    /* A thin line that brightens on hover, rather than a visible gutter. */
+    .resize-handle::after {
+        content: "";
+        position: absolute;
+        left: 4px; top: 0; bottom: 0; width: 2px;
+        background: transparent;
+        transition: background .12s ease;
+    }
+    .resize-handle:hover::after,
+    .resize-handle:focus-visible::after,
+    #detail-panel.resizing .resize-handle::after { background: var(--accent); }
+    .resize-handle:focus-visible { outline: none; }
+}
+
+/* ===================== Wrapping ===================== */
+/*
+ * Nothing in a detail view should be clipped: these are URLs, DOM dumps and
+ * payloads, and a value that is cut off is a value you cannot read. Long tokens
+ * wrap mid-string rather than forcing a horizontal scrollbar.
+ */
+
+#detail-body, .sheet-card { overflow-wrap: anywhere; }
+
+#detail-body pre, .sheet-card pre, .md pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-x: auto;
+}
+
+.detail-head h3 {
+    white-space: normal;
+    overflow: visible;
+    overflow-wrap: anywhere;
+}
+
+.kv dt, .kv dd { overflow-wrap: anywhere; }
+
+/* Pills hold technology strings and parameter names that can be long; let them
+   wrap instead of running past the card edge. */
+.pill { white-space: normal; }
+
+.item strong, .item .mono { overflow-wrap: anywhere; }

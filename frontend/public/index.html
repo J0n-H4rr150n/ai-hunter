@@ -24,7 +24,7 @@
             <nav id="topcrumbs" aria-label="breadcrumb">
                 <span class="tc home" id="crumb-home">AI Hunter</span>
                 <span class="tc-sep">›</span>
-                <span class="tc cur" id="feed-session">No mission selected</span>
+                <span class="tc cur" id="feed-session" title="Click to rename">No mission selected</span>
             </nav>
 
             <span id="run-dot" title="idle"></span>
@@ -123,6 +123,8 @@
     <!-- Desktop only: details open beside the list, not on top of it, so you can
          click straight through a set of records. Mobile uses #sheet instead. -->
     <aside id="detail-panel" aria-live="polite">
+        <div id="detail-resize" class="resize-handle" role="separator" aria-orientation="vertical"
+            aria-label="Resize details panel" tabindex="0" title="Drag to resize (double-click to reset)"></div>
         <div class="detail-head">
             <h3 id="detail-title">Details</h3>
             <button id="detail-close" class="icon-btn" aria-label="Close details">✕</button>
@@ -161,6 +163,9 @@
                 <h3>🚀 Start new mission</h3>
                 <button id="close-mission-modal" class="icon-btn">✕</button>
             </div>
+
+            <label for="mission-name">Name (optional)</label>
+            <input type="text" id="mission-name" placeholder="Juice Shop — access control sweep" maxlength="200">
 
             <label for="target-url">Target URL</label>
             <input type="url" id="target-url" placeholder="http://localhost:8080/">

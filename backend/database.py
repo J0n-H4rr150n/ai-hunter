@@ -59,21 +59,31 @@ class Database:
             return False
     
     # Mission operations
-    async def create_mission(self, target_url: str, instructions: Optional[str] = None) -> int:
+    async def create_mission(self, target_url: str, instructions: Optional[str] = None,
+                             name: Optional[str] = None) -> int:
         """Create a new mission"""
         async with self.pool.acquire() as conn:
             mission_id = await conn.fetchval(
                 """
-                INSERT INTO missions (goal, target_url, instructions, status)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO missions (goal, target_url, instructions, status, name)
+                VALUES ($1, $2, $3, $4, $5)
                 RETURNING id
                 """,
                 f"Audit {target_url}",
                 target_url,
                 instructions,
-                "planning"
+                "planning",
+                (name or "").strip() or None
             )
         return mission_id
+
+    async def rename_mission(self, mission_id: int, name: Optional[str]) -> None:
+        """Set or clear a mission's name."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE missions SET name = $1 WHERE id = $2",
+                (name or "").strip() or None, mission_id
+            )
     
     async def update_mission_status(self, mission_id: int, status: str):
         """Update mission status"""

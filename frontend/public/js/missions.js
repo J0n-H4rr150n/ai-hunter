@@ -1,4 +1,4 @@
-import { BACKEND_URL, state, fmtDateTime } from './config.js';
+import { BACKEND_URL, state, fmtDateTime, apiPost } from './config.js';
 import { addToFeed, resetFeedScroll, scrollFeedToBottom } from './feed.js';
 import { connectToSSE } from './sse.js';
 import { refreshActiveTab } from './tabs.js';
@@ -30,6 +30,11 @@ function hostOf(url) {
     try { return new URL(url).host; } catch { return url || 'unknown'; }
 }
 
+/** What to call a mission: its name if it has one, otherwise the target host. */
+export function missionLabel(m) {
+    return (m?.name || '').trim() || hostOf(m?.target_url);
+}
+
 // Rebuild the session picker. Called on boot and whenever a mission starts or ends,
 // so a newly started mission shows up without a reload.
 export async function loadMissionHistory(selectId = null) {
@@ -51,7 +56,7 @@ export async function loadMissionHistory(selectId = null) {
                 const option = document.createElement('option');
                 option.value = mission.id;
                 option.textContent =
-                    `#${mission.id} · ${hostOf(mission.target_url)} · ${mission.status} · ${fmtDateTime(mission.created_at)}`;
+                    `#${mission.id} · ${missionLabel(mission)} · ${mission.status} · ${fmtDateTime(mission.created_at)}`;
                 selector.appendChild(option);
             });
 
@@ -93,11 +98,12 @@ export function renderMissionList(missions) {
     host.innerHTML = sorted.map(m => `
         <div class="item clickable ${ACCENT[m.status] || ''}" data-mission="${m.id}">
             <div class="item-head">
-                <strong class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">#${m.id} · ${escapeHtml(hostOf(m.target_url))}</strong>
+                <strong>#${m.id} · ${escapeHtml(missionLabel(m))}</strong>
                 <span class="item-time">${escapeHtml(fmtDateTime(m.created_at))}</span>
             </div>
             <div style="margin-top:.25rem">
                 <span class="pill ${STATUS_STYLE[m.status] || ''}">${escapeHtml(m.status)}</span>
+                ${m.name ? `<span class="pill">${escapeHtml(hostOf(m.target_url))}</span>` : ''}
                 ${m.instructions ? `<span class="note">${escapeHtml(String(m.instructions).slice(0, 90))}…</span>` : ''}
             </div>
         </div>`).join('');
@@ -133,8 +139,11 @@ export function setFeedSession(mission) {
         return;
     }
 
-    label.textContent = `#${mission.id} · ${hostOf(mission.target_url)}`;
-    label.title = `${mission.target_url} · started ${fmtDateTime(mission.created_at)}`;
+    label.textContent = `#${mission.id} · ${missionLabel(mission)}`;
+    label.title = `${mission.target_url} · started ${fmtDateTime(mission.created_at)}`
+        + '\nClick to rename';
+    label.dataset.missionId = String(mission.id);
+    label.style.cursor = 'pointer';
     badge.textContent = mission.status;
     badge.className = `pill ${STATUS_STYLE[mission.status] || ''}`;
     if (dot) dot.className = RUN_DOT[mission.status] || '';
@@ -172,6 +181,36 @@ export async function refreshSessionHeader(missionId, { force = false } = {}) {
     } catch (error) {
         console.warn('Could not refresh session header:', error);
     }
+}
+
+/**
+ * Rename the active mission from the breadcrumb.
+ *
+ * Twenty runs against the same host are indistinguishable by URL alone, so the
+ * label is editable in place rather than only at creation time.
+ */
+export function initMissionRename() {
+    const label = document.getElementById('feed-session');
+    label?.addEventListener('click', async () => {
+        const missionId = Number(label.dataset.missionId);
+        if (!missionId) return;
+
+        const mission = state.missions.find(m => m.id === missionId);
+        const current = (mission?.name || '').trim();
+        const next = window.prompt('Name this mission (blank to clear):', current);
+        if (next === null) return;
+
+        try {
+            await apiPost(`/api/missions/${missionId}/rename`, { name: next });
+            await loadMissionHistory(missionId);
+            await refreshSessionHeader(missionId, { force: true });
+        } catch (error) {
+            addToFeed({
+                message: `❌ Could not rename: ${error.message}`,
+                timestamp: new Date().toISOString(), type: 'error'
+            });
+        }
+    });
 }
 
 export function initMissionSelector() {
@@ -352,7 +391,8 @@ export function initNewMissionButton() {
             const endpoint = playbook ? '/api/missions/start-playbook' : '/api/missions/start';
             const payload = {
                 target_url: savedUrl,
-                instructions: savedInstructions || null
+                instructions: savedInstructions || null,
+                name: (document.getElementById('mission-name')?.value || '').trim() || null,
             };
 
             if (playbook) {
