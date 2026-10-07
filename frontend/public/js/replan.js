@@ -1,4 +1,4 @@
-import { BACKEND_URL, state } from './config.js';
+import { BACKEND_URL, state, apiPost } from './config.js';
 import { addToFeed } from './feed.js';
 
 // Show replan prompt when iteration completes
@@ -36,42 +36,42 @@ export function showReplanPrompt(data) {
 
 // Approve replanning - create next iteration
 window.approveReplan = async function (missionId) {
+    const button = document.querySelector(`#replan-prompt-${missionId} button`);
+    if (button) { button.disabled = true; button.textContent = '⏳ Planning...'; }
+
     try {
-        const response = await fetch(`${BACKEND_URL}/api/missions/${missionId}/replan`, {
-            method: 'POST'
+        const result = await apiPost(`/api/missions/${missionId}/replan`);
+        document.getElementById(`replan-prompt-${missionId}`)?.remove();
+        addToFeed({
+            message: `🔄 Continuing — iteration ${result?.iteration_number ?? 'next'} planned from findings...`,
+            timestamp: new Date().toISOString()
         });
-
-        if (response.ok) {
-            // Remove prompt
-            document.getElementById(`replan-prompt-${missionId}`)?.remove();
-
-            addToFeed({
-                message: '🔄 Creating next iteration based on findings...',
-                timestamp: new Date().toISOString()
-            });
-        }
     } catch (error) {
         console.error('Failed to replan:', error);
+        if (button) { button.disabled = false; button.textContent = '✅ Continue Hunting'; }
+        addToFeed({
+            message: `❌ Could not continue: ${error.message}`,
+            timestamp: new Date().toISOString(),
+            type: 'error'
+        });
     }
 };
 
 // Stop mission
 window.stopMission = async function (missionId) {
     try {
-        const response = await fetch(`${BACKEND_URL}/api/missions/${missionId}/stop`, {
-            method: 'POST'
+        await apiPost(`/api/missions/${missionId}/stop`);
+        document.getElementById(`replan-prompt-${missionId}`)?.remove();
+        addToFeed({
+            message: '⏹️ Mission stopped by user',
+            timestamp: new Date().toISOString()
         });
-
-        if (response.ok) {
-            // Remove prompt
-            document.getElementById(`replan-prompt-${missionId}`)?.remove();
-
-            addToFeed({
-                message: '⏹️ Mission stopped by user',
-                timestamp: new Date().toISOString()
-            });
-        }
     } catch (error) {
         console.error('Failed to stop mission:', error);
+        addToFeed({
+            message: `❌ Could not stop mission: ${error.message}`,
+            timestamp: new Date().toISOString(),
+            type: 'error'
+        });
     }
 };

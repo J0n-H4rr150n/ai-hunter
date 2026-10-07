@@ -12,6 +12,7 @@ from core.playbook_manager import PlaybookManager
 from core.runbook_engine import RunbookParser, RunbookExecutor, RunbookFlowManager
 from core.state_manager import StateManager, StateScope
 from core.tool_mapper import ToolMapper, ToolMapperError
+from core.tool_recorder import truncate
 from memory.finding_repository import FindingRepository
 
 
@@ -651,6 +652,16 @@ class PlaybookExecutor:
             else:
                 raise ValueError(f"Step '{step.get('name')}' missing 'action' field")
         
+        # Record the call before running it, so a hang or crash still leaves a row.
+        recorder = getattr(self.loop, 'tool_recorder', None)
+        execution_id = None
+        if recorder is not None and recorder.enabled:
+            execution_id = await self.loop.db.start_tool_execution(
+                recorder.mission_id, action,
+                truncate({'step': step.get('name'), 'step_id': step.get('id'),
+                          'tool': step.get('tool'), 'params': step})
+            )
+
         try:
             # Execute action using ToolMapper in thread pool (for Playwright sync API compatibility)
             findings = await asyncio.to_thread(
@@ -659,6 +670,11 @@ class PlaybookExecutor:
                 step,
                 execution_context
             )
+
+            if execution_id is not None:
+                await self.loop.db.complete_tool_execution(
+                    execution_id, truncate(findings if isinstance(findings, dict) else {'result': findings})
+                )
             
             # Validate findings match expected schema (optional)
             expected_findings = step.get('findings_to_log', [])
@@ -668,6 +684,11 @@ class PlaybookExecutor:
             return findings
             
         except ToolMapperError as e:
+            if execution_id is not None:
+                await self.loop.db.complete_tool_execution(
+                    execution_id, {'error': str(e)}, status='failed',
+                    error_message=f"{type(e).__name__}: {e}"
+                )
             self._log(f"[Step] ❌ Tool mapping error: {e}")
             # Raise exception to stop execution
             raise RunbookExecutionError(f"Step '{step.get('name')}' failed: {e}")

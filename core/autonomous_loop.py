@@ -10,6 +10,7 @@ from tools.fuzzer import Fuzzer
 from tools.som_browser import SoMBrowser
 from core.browser_thread import ThreadedBrowser
 from core.mission_control import MissionControl, MissionStopped, MissionAborted
+from core.tool_recorder import ToolRecorder, NULL_RECORDER
 from memory.finding_repository import FindingRepository
 from core.agent_tracker import AgentTracker
 from config.config import Config
@@ -49,6 +50,9 @@ class AutonomousLoop:
         # Durable event bus, injected by the backend. Events are persisted before
         # they are broadcast, so they survive with no UI connected.
         self.events = None
+        # Writes every tool call to tool_executions. Replaced by the backend with a
+        # bound recorder; the null one keeps call sites unconditional.
+        self.tool_recorder = NULL_RECORDER
         self.web_approval_callback = None  # For plan approval
         self.tool_approval_callback = None  # For HITL tool approval
         self.hitl_enabled = False  # HITL flag
@@ -410,7 +414,9 @@ class AutonomousLoop:
         self.log_to_ui(f"[Scanner] Analyzing technology stack for: {url}")
         
         # HTTP-based tech fingerprinting
-        tech_results = self.scanner.scan_url(url)
+        with self.tool_recorder.record("tech_scan", {"url": url}) as call:
+            tech_results = self.scanner.scan_url(url)
+            call.result = tech_results
         
         # Show detailed tech stack results
         if tech_results:
@@ -426,11 +432,21 @@ class AutonomousLoop:
         if self.browser:
             self.control.checkpoint()
             self.log_to_ui(f"[Auto] 🌐 Opening {url} in browser for visual analysis...")
-            self.browser.navigate(url)
-            
+            with self.tool_recorder.record("navigate", {"url": url}) as call:
+                self.browser.navigate(url)
+                call.result = {"url": url}
+
             # Capture visual snapshot with Set-of-Marks
             self.log_to_ui("[Auto] 📸 Capturing page snapshot with interactive elements...")
-            snapshot = self.browser.get_snapshot_triad()
+            with self.tool_recorder.record("snapshot_triad", {"url": url}) as call:
+                snapshot = self.browser.get_snapshot_triad()
+                call.result = {
+                    "url": snapshot.get("url"),
+                    "element_count": len(snapshot.get("elements", [])),
+                    "dom": snapshot.get("dom"),
+                    "raw_source": snapshot.get("raw_source"),
+                    "network": snapshot.get("network"),
+                }
             
             # Always capture screenshot regardless
             shadow_result = self.tracker.capture_shadow("scan_complete", {
@@ -492,7 +508,8 @@ class AutonomousLoop:
             self.log_to_ui(f"[Auto] 📋 Applying user guidance: {instructions[:80]}...")
         
         # Try traditional URL parameter fuzzing first
-        self.fuzzer.fuzz_url_params(url)
+        with self.tool_recorder.record("fuzz_url_params", {"url": url}) as call:
+            call.result = self.fuzzer.fuzz_url_params(url)
         
         # If we have a browser, also fuzz discovered input fields
         if self.browser:
@@ -562,7 +579,10 @@ class AutonomousLoop:
                             self.browser.clear_network_logs()
                             
                             # Type the actual (possibly edited) payload
-                            self.browser.interact("type", elem_id, actual_payload)
+                            with self.tool_recorder.record(
+                                "type", {"element_id": elem_id, "payload": actual_payload, "url": url}
+                            ) as call:
+                                call.result = self.browser.interact("type", elem_id, actual_payload)
                             self.quota.tally("actions", 1)
                             
                             # Try to submit the form
@@ -571,7 +591,10 @@ class AutonomousLoop:
                             
                             if submit_btn_id:
                                 self.log_to_ui(f"[Auto] 📤 Submitting form with payload...")
-                                self.browser.interact("click", submit_btn_id)
+                                with self.tool_recorder.record(
+                                    "click", {"element_id": submit_btn_id, "url": url}
+                                ) as call:
+                                    call.result = self.browser.interact("click", submit_btn_id)
                                 self.quota.tally("actions", 1)
                                 
                                 # Wait for network response
@@ -885,7 +908,7 @@ class AutonomousLoop:
             Keep it under 300 words.
             """
             
-            summary = planner._call_llm(prompt)
+            summary = planner.complete(prompt)
             self.log_to_ui("[Auto] ✅ Summary generated")
             return summary
             
@@ -941,11 +964,12 @@ class AutonomousLoop:
             Generate a tactical plan with specific steps.
             """
             
+            # generate_plan has no `context` parameter; the accumulated history
+            # belongs in the goal, which is what the planner actually reads.
             new_plan = planner.generate_plan(
-                goal=f"Iteration {current_iteration_num + 1}: Continue security testing",
-                triad=triad,
-                tech_report={},
-                context=prompt
+                goal=prompt,
+                triad=triad or {},
+                tech_report={}
             )
             
             # Create new iteration in database

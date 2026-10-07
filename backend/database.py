@@ -609,6 +609,73 @@ class Database:
             return "\n".join(summaries) if summaries else "No completed iterations yet."
     
     # Activity log operations
+    # Tool execution recording
+    async def start_tool_execution(
+        self,
+        mission_id: Optional[int],
+        tool_name: str,
+        inputs: dict,
+        started_at: Optional[datetime] = None
+    ) -> int:
+        """
+        Record that a tool call has begun.
+
+        Written on entry rather than on completion so a tool that hangs or crashes
+        the process still leaves a row with status 'running'.
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                """
+                INSERT INTO tool_executions
+                (mission_id, tool_name, inputs, status, started_at)
+                VALUES ($1, $2, $3, 'running', COALESCE($4, CURRENT_TIMESTAMP))
+                RETURNING id
+                """,
+                mission_id, tool_name, json.dumps(inputs, default=str), started_at
+            )
+
+    async def complete_tool_execution(
+        self,
+        execution_id: int,
+        outputs: Optional[dict] = None,
+        status: str = "success",
+        error_message: Optional[str] = None,
+        raw_output_path: Optional[str] = None
+    ) -> None:
+        """Close out a tool call with its response or its error."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE tool_executions
+                SET outputs = $2, status = $3, error_message = $4,
+                    raw_output_path = COALESCE($5, raw_output_path),
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE id = $1
+                """,
+                execution_id,
+                json.dumps(outputs, default=str) if outputs is not None else None,
+                status, error_message, raw_output_path
+            )
+
+    async def get_tool_executions(
+        self, mission_id: int, limit: int = 500
+    ) -> List[Dict[str, Any]]:
+        """Every tool call for a mission, oldest first."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, tool_name, inputs, outputs, status, error_message,
+                       raw_output_path, started_at, completed_at,
+                       EXTRACT(MILLISECONDS FROM (completed_at - started_at))::int AS duration_ms
+                FROM tool_executions
+                WHERE mission_id = $1
+                ORDER BY started_at ASC, id ASC
+                LIMIT $2
+                """,
+                mission_id, limit
+            )
+            return [dict(r) for r in rows]
+
     async def save_activity_log(
         self,
         mission_id: int,

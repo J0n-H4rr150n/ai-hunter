@@ -47,6 +47,27 @@ export function tzAbbrev(ts) {
     return name ? name.value : 'ET';
 }
 
+// --- API helper -----------------------------------------------------------
+// Several handlers used `if (response.ok) { ... }` with no else, so a failed
+// request produced no UI change at all and the button looked dead. This throws
+// with the server's detail so callers can report it.
+export async function apiPost(path, body = null) {
+    const response = await fetch(`${BACKEND_URL}${path}`, {
+        method: 'POST',
+        headers: body ? { 'Content-Type': 'application/json' } : {},
+        body: body ? JSON.stringify(body) : undefined,
+    });
+
+    let payload = null;
+    try { payload = await response.json(); } catch { /* empty or non-JSON body */ }
+
+    if (!response.ok) {
+        const detail = (payload && (payload.detail || payload.error)) || `HTTP ${response.status}`;
+        throw new Error(detail);
+    }
+    return payload;
+}
+
 // Global state
 export let state = {
     currentMissionId: null,
@@ -58,8 +79,9 @@ export let state = {
     currentPlaybook: null, // Current playbook name
     eventSource: null,
     sidebarCollapsed: false,
-    userHasScrolled: false,
-    scrollTimeout: null,
+    // Feed is pinned to the bottom until the user scrolls away from it.
+    followFeed: true,
+    newEntryCount: 0,
     currentSettings: {
         hitl_enabled: false,
         auto_approve_tools: ['view_raw_source', 'view_dom', 'check_network']

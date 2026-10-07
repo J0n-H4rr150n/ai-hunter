@@ -34,6 +34,7 @@ from core.browser_thread import ThreadedBrowser
 from core.playbook_manager import PlaybookManager
 from core.playbook_executor import PlaybookExecutor
 from core.mission_control import MissionStopped, MissionAborted
+from core.tool_recorder import ToolRecorder
 from core.logging_setup import configure_logging, log_unhandled
 
 # Setup logging
@@ -338,6 +339,17 @@ async def get_mission_activity(mission_id: int, limit: int = 1000, after: int = 
     return await events.replay(mission_id, limit=limit, after_id=after)
 
 
+@app.get("/api/missions/{mission_id}/tools")
+async def get_mission_tool_calls(mission_id: int, limit: int = 500):
+    """
+    Every tool call made during a mission, with inputs, outputs, status and timing.
+
+    Large payloads (DOM, page source) are stored truncated with the original size
+    recorded; the full artefacts live in hive_bucket.
+    """
+    return await db.get_tool_executions(mission_id, limit=limit)
+
+
 @app.post("/api/missions/start")
 async def start_mission(mission: MissionStart):
     """Start a new autonomous mission"""
@@ -359,6 +371,7 @@ async def start_mission(mission: MissionStart):
     
     auto_loop = AutonomousLoop(tracker, repo, quota, db)
     auto_loop.events = events
+    auto_loop.tool_recorder = ToolRecorder(db, mission_id, asyncio.get_running_loop())
     
     # Create approval queue for this mission
     approval_queue = asyncio.Queue()
@@ -693,6 +706,7 @@ async def execute_playbook_mission(
         auto_loop = AutonomousLoop(tracker, repo, quota, db)
         auto_loop.mission_id = mission_id
         auto_loop.events = events
+        auto_loop.tool_recorder = ToolRecorder(db, mission_id, asyncio.get_running_loop())
 
         # Publish it immediately so /pause and /stop have something to signal.
         if mission_id in active_missions:
@@ -1140,7 +1154,16 @@ async def stop_mission(mission_id: int):
     """
     mission = active_missions.get(mission_id)
     if not mission:
-        raise HTTPException(status_code=404, detail="Mission not found")
+        # The mission already finished, or the process restarted. Stopping something
+        # that is not running is a no-op, not an error -- raising 404 here made the
+        # Stop button appear to do nothing.
+        row = await db.get_mission(mission_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Mission not found")
+        if row["status"] not in ("completed", "stopped", "aborted", "failed"):
+            await db.update_mission_status(mission_id, "stopped")
+            await publish_mission_update(mission_id, "⏹️ Mission marked stopped", "mission_status")
+        return {"status": "stopped", "was_active": False}
 
     auto_loop = mission.get("loop")
 
@@ -1238,10 +1261,49 @@ async def approve_iteration(mission_id: int, iteration_num: int, approval: PlanA
 
 @app.post("/api/missions/{mission_id}/replan")
 async def replan_mission(mission_id: int):
-    """Create next iteration based on previous findings"""
-    if mission_id not in active_missions:
+    """
+    Continue hunting: plan and run another iteration for this mission.
+
+    The replan prompt is shown when an iteration finishes, by which point
+    run_mission has usually already cleaned the mission out of active_missions --
+    so this used to 404 and the "Continue Hunting" button did nothing. If the
+    mission is no longer resident we rebuild a runtime for it instead.
+    """
+    row = await db.get_mission(mission_id)
+    if not row:
         raise HTTPException(status_code=404, detail="Mission not found")
-    
+
+    resumed = mission_id not in active_missions
+    if resumed:
+        tracker = AgentTracker(agent_id=f"mission_{mission_id}")
+        repo = FindingRepository()
+        quota = QuotaManager(agent_id=f"mission_{mission_id}")
+
+        auto_loop = AutonomousLoop(tracker, repo, quota, db)
+        auto_loop.mission_id = mission_id
+        auto_loop.events = events
+        auto_loop.tool_recorder = ToolRecorder(db, mission_id, asyncio.get_running_loop())
+
+        main_loop = asyncio.get_running_loop()
+
+        def ui_log_callback(message: str, screenshot: dict = None):
+            asyncio.run_coroutine_threadsafe(
+                publish_mission_update(mission_id, message, "mission_log", screenshot),
+                main_loop
+            )
+
+        auto_loop.ui_callback = ui_log_callback
+
+        active_missions[mission_id] = {
+            "loop": auto_loop,
+            "tracker": tracker,
+            "repo": repo,
+            "quota": quota,
+            "status": "running",
+        }
+        await db.update_mission_status(mission_id, "running")
+        await publish_mission_update(mission_id, "🔄 Resuming mission for another iteration...", "mission_log")
+
     try:
         # Get the autonomous loop instance
         auto_loop = active_missions[mission_id]['loop']

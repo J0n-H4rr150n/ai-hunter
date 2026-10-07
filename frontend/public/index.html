@@ -73,8 +73,20 @@
                 <span id="feed-session-status"
                     class="text-xs px-2 py-1 rounded-full bg-gray-700 text-gray-300 shrink-0">idle</span>
             </div>
-            <div id="feed-content" class="space-y-2 overflow-y-auto flex-1 px-6 py-4">
-                <!-- Live updates will appear here -->
+            <!-- relative: anchors the "new activity" pill over the scroll area -->
+            <div class="flex-1 relative min-h-0">
+                <div id="feed-content" class="space-y-2 overflow-y-auto h-full px-6 py-4">
+                    <!-- Live updates will appear here -->
+                </div>
+
+                <!-- Shown only when the user has scrolled away from the bottom. -->
+                <button id="feed-jump"
+                    class="hidden absolute left-1/2 -translate-x-1/2 bottom-4 z-10 items-center gap-2
+                           px-4 py-2 rounded-full bg-blue-600 hover:bg-blue-500 text-white text-sm
+                           font-semibold shadow-lg shadow-black/40 transition">
+                    <span id="feed-jump-label">New activity</span>
+                    <span aria-hidden="true">↓</span>
+                </button>
             </div>
         </section>
 

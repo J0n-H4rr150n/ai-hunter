@@ -1,5 +1,5 @@
 import { BACKEND_URL, state, fmtDateTime } from './config.js';
-import { addToFeed } from './feed.js';
+import { addToFeed, resetFeedScroll, scrollFeedToBottom } from './feed.js';
 import { connectToSSE } from './sse.js';
 
 export function updateMissionStatus(data) {
@@ -111,6 +111,7 @@ export function initMissionSelector() {
 export async function selectLive() {
     state.currentMissionId = null;
     document.getElementById('feed-content').innerHTML = '';
+    resetFeedScroll();
     setFeedSession(null);
     updateMissionControls(null);
     connectToSSE();            // global stream
@@ -129,6 +130,7 @@ export async function selectMission(missionId) {
 
         const feedContent = document.getElementById('feed-content');
         feedContent.innerHTML = '';
+        resetFeedScroll();
 
         const mission = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}`)).json();
         setFeedSession(mission);

@@ -222,18 +222,45 @@ class LocalModel:
                 resp.raise_for_status()
                 body = resp.json()
 
-                message = body["choices"][0]["message"]
+                choice = body["choices"][0]
+                message = choice["message"]
                 text = message.get("content") or ""
                 # llama-server returns thinking separately when reasoning is split out.
                 if not text.strip() and message.get("reasoning_content"):
                     text = message["reasoning_content"]
 
+                if not text.strip():
+                    # An empty completion usually means the prompt filled the context
+                    # window or the generation budget went entirely on reasoning.
+                    # Say which, rather than failing later on a JSON parse.
+                    raise RuntimeError(
+                        f"model returned an empty completion "
+                        f"(finish_reason={choice.get('finish_reason')!r}, "
+                        f"usage={body.get('usage')}). The prompt is likely too long "
+                        f"for the served context window, or max_tokens was consumed "
+                        f"by reasoning."
+                    )
+
                 text = _extract_json(text) if wants_json else _strip_reasoning(text)
 
                 if wants_json:
-                    json.loads(text)  # validate before handing back to the caller
+                    try:
+                        json.loads(text)  # validate before handing back to the caller
+                    except json.JSONDecodeError as e:
+                        raise ValueError(
+                            f"model did not return valid JSON ({e}); "
+                            f"first 300 chars: {text[:300]!r}"
+                        ) from e
 
                 return LocalResponse(text, body.get("usage"), body)
+
+            except RuntimeError as e:
+                # An empty completion is deterministic — the prompt does not fit, or
+                # the token budget is exhausted. Retrying just burns the single
+                # llama-server slot (--parallel 1) and blocks every other call for
+                # minutes, so fail fast and let the caller shorten the prompt.
+                last_error = e
+                break
 
             except Exception as e:   # noqa: BLE001 - retry on transport or parse failure
                 last_error = e

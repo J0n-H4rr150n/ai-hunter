@@ -7,6 +7,20 @@ class TacticalPlanner:
     def __init__(self):
         self.model = LocalModel(Config.LLM_MODEL)
         
+    def complete(self, prompt: str, max_tokens: int = 1024) -> str:
+        """
+        Plain-text completion, for summaries and other non-JSON work.
+
+        The iteration summariser called a `_call_llm` method that never existed, so
+        every summary raised AttributeError and silently fell back to a stub - which
+        then became the input to the next iteration's plan.
+        """
+        response = self.model.generate_content(
+            [prompt],
+            generation_config={"max_output_tokens": max_tokens},
+        )
+        return response.text.strip()
+
     def generate_plan(self, goal: str, triad: dict, tech_report: dict) -> dict:
         """
         Synthesizes Tech Stack + Visuals + Network into a Master Plan.
@@ -33,6 +47,8 @@ class TacticalPlanner:
         FINDINGS: {tech_report.get('findings', [])}
         """
 
+        triad = triad or {}
+
         prompt = [
             f"MISSION GOAL: {goal}",
             f"TARGET URL: {triad.get('url', 'Unknown')}",
@@ -49,8 +65,6 @@ class TacticalPlanner:
             f"   HARD CAPS: {json.dumps(HARD_CAPS)}",
             "   Don't ask for max unless needed. Be efficient.",
             "4. OUTPUT STRICT JSON ONLY.",
-            
-            Part.from_data(triad['screenshot'], mime_type="image/jpeg"),
             
             """JSON SCHEMA:
             {
@@ -69,6 +83,11 @@ class TacticalPlanner:
             """
         ]
         
+        # Replanning between iterations has no live browser, so there may be no
+        # screenshot to anchor on. Only attach one when it exists.
+        if triad.get('screenshot'):
+            prompt.insert(-1, Part.from_data(triad['screenshot'], mime_type="image/jpeg"))
+
         # Print removed - logged by autonomous_loop instead
         try:
             response = self.model.generate_content(
