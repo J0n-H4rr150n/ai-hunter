@@ -1,4 +1,4 @@
-import { BACKEND_URL, state, logToBackend } from './config.js';
+import { BACKEND_URL, state, logToBackend, fmtTime } from './config.js';
 import { addToFeed } from './feed.js';
 
 export function switchSidebarTab(tabName) {
@@ -37,7 +37,7 @@ export function addIdea(idea) {
             <div class="flex-1">
                 <p class="text-xs text-gray-300">${idea.suggestion || idea.text || idea}</p>
                 ${idea.rationale ? `<p class="text-xs text-gray-500 mt-1">${idea.rationale}</p>` : ''}
-                <p class="text-xs text-gray-500 mt-1">${new Date().toLocaleTimeString()}</p>
+                <p class="text-xs text-gray-500 mt-1">${fmtTime()}</p>
             </div>
         </div>
     `;
@@ -187,7 +187,7 @@ export function updatePlanSidebar(plan, status) {
         <div class="mb-4 pb-4 border-b border-gray-700">
             <div class="flex items-center justify-between mb-2">
                 <span class="text-xs font-semibold ${statusColor}">${statusIcon} ${statusText}</span>
-                <span class="text-xs text-gray-500">${new Date().toLocaleTimeString()}</span>
+                <span class="text-xs text-gray-500">${fmtTime()}</span>
             </div>
         </div>
     `;

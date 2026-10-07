@@ -6,7 +6,7 @@ Captures everything needed for debugging, auditing, and optimization
 import time
 import json
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from enum import Enum
 
@@ -126,7 +126,7 @@ class LLMTracer:
             agent_name=agent_name,
             llm_model=llm_model,
             user_prompt=user_prompt,
-            timestamp_start=datetime.utcnow().isoformat(),
+            timestamp_start=datetime.now(timezone.utc).isoformat(),
             **kwargs
         )
         return trace
@@ -138,7 +138,7 @@ class LLMTracer:
         **kwargs
     ):
         """Complete the trace and store it"""
-        trace.timestamp_end = datetime.utcnow().isoformat()
+        trace.timestamp_end = datetime.now(timezone.utc).isoformat()
         trace.llm_response = llm_response
         
         # Update with any additional fields
@@ -179,7 +179,7 @@ class LLMTracer:
         fallback_used: bool = False
     ):
         """Record an error in the trace"""
-        trace.timestamp_end = datetime.utcnow().isoformat()
+        trace.timestamp_end = datetime.now(timezone.utc).isoformat()
         trace.status = LLMCallStatus.FAILED.value
         trace.error_message = str(error)
         trace.retry_count = retry_count

@@ -6,7 +6,7 @@ import asyncpg
 import os
 import json
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Check if embeddings are disabled
 EMBEDDINGS_ENABLED = os.getenv('DISABLE_EMBEDDINGS', 'true').lower() not in ('1', 'true', 'yes')
@@ -18,7 +18,21 @@ class Database:
     
     async def initialize(self):
         """Create connection pool"""
-        self.pool = await asyncpg.create_pool(self.database_url)
+
+        async def _init_connection(conn):
+            # asyncpg hands back json/jsonb as raw text unless told otherwise, so
+            # callers that reasonably expect dicts and lists got strings instead.
+            # A non-empty JSON string is truthy, which silently inverted boolean
+            # settings such as hitl_enabled.
+            for pg_type in ("json", "jsonb"):
+                await conn.set_type_codec(
+                    pg_type,
+                    encoder=json.dumps,
+                    decoder=json.loads,
+                    schema="pg_catalog",
+                )
+
+        self.pool = await asyncpg.create_pool(self.database_url, init=_init_connection)
         print("✅ Database connection pool created")
     
     async def close(self):
@@ -420,7 +434,7 @@ class Database:
                 json.dumps(value) if not isinstance(value, str) else value,
                 new_version,
                 json.dumps(metadata) if metadata else None,
-                datetime.utcnow()
+                datetime.now(timezone.utc)
             )
     
     async def get_state_by_scope(self, scope: str, scope_id: str) -> Dict[str, Any]:

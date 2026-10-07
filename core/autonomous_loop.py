@@ -7,8 +7,11 @@ from agents.planner import TacticalPlanner
 from tools.tech_scanner import TechScanner
 from tools.fuzzer import Fuzzer
 from tools.som_browser import SoMBrowser
+from core.browser_thread import ThreadedBrowser
+from core.mission_control import MissionControl, MissionStopped
 from memory.finding_repository import FindingRepository
 from core.agent_tracker import AgentTracker
+from config.config import Config
 from core.quota_manager import QuotaManager
 from core.playbook_executor import PlaybookExecutor, PlaybookExecutionError
 
@@ -31,6 +34,10 @@ class AutonomousLoop:
         
         # Browser (will be initialized per mission)
         self.browser = None
+
+        # Pause/stop signalling. The backend flips these; every checkpoint below
+        # observes them, so a stop cannot be swallowed by a long-running phase.
+        self.control = MissionControl()
         
         # UI integration
         self.mission_id = None
@@ -123,25 +130,40 @@ class AutonomousLoop:
         # 2. Initialize browser (headless mode for Docker)
         self.log_to_ui("[Auto] 🌐 Launching browser...")
         loop = asyncio.get_event_loop()
-        self.browser = await loop.run_in_executor(None, lambda: SoMBrowser(headless=True))
+        self.browser = await loop.run_in_executor(
+            None, lambda: ThreadedBrowser(lambda: SoMBrowser(headless=True))
+        )
         self.tracker.set_browser(self.browser)
         
-        # 3. Generate Plan using Gemini
-        self.log_to_ui("[Auto] 🧠 Generating execution plan with Gemini 2.5 Pro...")
+        # 3. Generate Plan using the local model
+        self.log_to_ui(f"[Auto] 🧠 Generating execution plan with {Config.LLM_MODEL}...")
         try:
-            # Quick tech scan first
-            tech_report = self._quick_tech_scan(target_url)
-            
-            # Navigate to get visual context
-            self.browser.navigate(target_url)
-            triad = self.browser.get_snapshot_triad()
-            
-            # Generate plan with LLM
-            tactical_planner = TacticalPlanner()
-            self.log_to_ui("[Planner] Synthesizing Tech Stack & Visuals into Plan...")
-            plan = tactical_planner.generate_plan(goal, triad, tech_report)
+            # Scanning, navigating and the planning call are all blocking, and the
+            # model call alone can run for tens of seconds. Keep them off the event
+            # loop so /stop, /pause and the rest of the API stay responsive while the
+            # plan is being produced.
+            def _build_plan():
+                tech_report = self._quick_tech_scan(target_url)
+
+                # Navigate to get visual context
+                self.browser.navigate(target_url)
+                triad = self.browser.get_snapshot_triad()
+
+                # Generate plan with LLM
+                tactical_planner = TacticalPlanner()
+                self.log_to_ui("[Planner] Synthesizing Tech Stack & Visuals into Plan...")
+                return tactical_planner.generate_plan(goal, triad, tech_report)
+
+            plan = await loop.run_in_executor(None, _build_plan)
+            self.control.raise_if_stopped()
             workflow.set_plan(plan)
-            
+
+        except MissionStopped:
+            self.log_to_ui("[Auto] ⏹️ Mission stopped during planning.")
+            if self.browser:
+                self.browser = None
+            self.tracker.set_browser(None)
+            return
         except Exception as e:
             self.log_to_ui(f"[Auto] ❌ Plan generation failed: {e}")
             self.log_to_ui("[Auto] 🛑 Aborting mission")
@@ -156,8 +178,13 @@ class AutonomousLoop:
         
         # Check if we have a web approval callback (injected by backend)
         if hasattr(self, 'web_approval_callback') and self.web_approval_callback:
-            # The callback should be a synchronous wrapper that handles the async call
-            approved, edited_plan = self.web_approval_callback(plan)
+            # The backend's wrapper blocks on run_coroutine_threadsafe(...).result().
+            # Calling it inline would park the event loop waiting on a coroutine that
+            # only that same loop can run — a permanent deadlock. Run it on a worker
+            # thread so the loop stays free to service the approval request.
+            approved, edited_plan = await loop.run_in_executor(
+                None, self.web_approval_callback, plan
+            )
         else:
             # Fall back to terminal-based approval
             interface = HumanInterface(self.tracker)
@@ -203,9 +230,11 @@ class AutonomousLoop:
                 await self.run_iteration(iteration_id, edited_plan)
             else:
                 # Fallback to old behavior if no DB
-                self.run_loop()
+                await asyncio.get_event_loop().run_in_executor(None, self.run_loop)
             
             workflow.complete()
+        except MissionStopped:
+            self.log_to_ui("[Auto] ⏹️ Mission stopped by user.")
         finally:
             # 7. Always cleanup browser
             self.log_to_ui("[Auto] 🛑 Closing browser...")
@@ -240,7 +269,9 @@ class AutonomousLoop:
         # Initialize browser (headless mode for Docker)
         self.log_to_ui("[Playbook] 🌐 Launching browser...")
         loop = asyncio.get_event_loop()
-        self.browser = await loop.run_in_executor(None, lambda: SoMBrowser(headless=True))
+        self.browser = await loop.run_in_executor(
+            None, lambda: ThreadedBrowser(lambda: SoMBrowser(headless=True))
+        )
         self.tracker.set_browser(self.browser)
         
         # Initialize playbook executor
@@ -308,6 +339,12 @@ class AutonomousLoop:
         self.log_to_ui("[Auto] Entering execution loop...")
         
         while True:
+            # Honour pause/stop before committing to another task.
+            self.control.checkpoint(
+                on_pause=lambda: self.log_to_ui("[Auto] ⏸️ Paused — waiting for resume..."),
+                on_resume=lambda: self.log_to_ui("[Auto] ▶️ Resumed."),
+            )
+
             # 1. Get Next Task
             task = self.planner.get_next_task()
             
@@ -379,6 +416,7 @@ class AutonomousLoop:
         
         # Browser-based visual reconnaissance
         if self.browser:
+            self.control.checkpoint()
             self.log_to_ui(f"[Auto] 🌐 Opening {url} in browser for visual analysis...")
             self.browser.navigate(url)
             
@@ -493,6 +531,7 @@ class AutonomousLoop:
                         test_payloads = ["<script>alert(1)</script>", "' OR '1'='1", "../../etc/passwd"]
                     
                     for payload in test_payloads:
+                        self.control.checkpoint()
                         if not self.quota.check_limit("actions"):
                             break
                         
@@ -760,8 +799,10 @@ class AutonomousLoop:
                 
                 self.planner.add_task(task_type, target, description)
         
-        # Execute the iteration using the existing run_loop
-        self.run_loop()
+        # Execute the iteration using the existing run_loop.
+        # Off the event loop: run_loop blocks, and the API (including /stop) plus the
+        # HITL approval round-trip both need the loop to stay responsive.
+        await asyncio.get_event_loop().run_in_executor(None, self.run_loop)
         
         # Iteration complete - generate summary
         self.log_to_ui("\n[Auto] ✅ Iteration execution complete, generating summary...")
@@ -774,7 +815,6 @@ class AutonomousLoop:
         
         # Publish iteration_completed event for UI
         if hasattr(self, 'mission_id'):
-            import asyncio
             from backend.redis_manager import RedisManager
             redis_mgr = RedisManager()
             await redis_mgr.connect()

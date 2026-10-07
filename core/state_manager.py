@@ -7,7 +7,7 @@ Inspired by LangGraph checkpointing and Redis state management patterns.
 import json
 from typing import Any, Dict, Optional, List
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 
 class StateScope(Enum):
@@ -92,7 +92,7 @@ class StateManager:
             str(mission_id), 
             name, 
             full_state,
-            metadata={"checkpoint_time": datetime.utcnow().isoformat()}
+            metadata={"checkpoint_time": datetime.now(timezone.utc).isoformat()}
         )
     
     async def restore_checkpoint(self, mission_id: int, name: str) -> Optional[Dict[str, Any]]:

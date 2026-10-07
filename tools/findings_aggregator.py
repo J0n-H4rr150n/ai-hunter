@@ -6,7 +6,7 @@ It provides pattern matching, similarity search, and finding compilation.
 """
 
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Type hints only - no runtime import
 from typing import TYPE_CHECKING
@@ -85,7 +85,7 @@ class FindingsAggregator:
             'by_type': by_type,
             'by_severity': by_severity,
             'findings': findings,
-            'compiled_at': datetime.utcnow().isoformat()
+            'compiled_at': datetime.now(timezone.utc).isoformat()
         }
     
     async def pattern_search(

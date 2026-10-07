@@ -8,7 +8,7 @@ SAFETY_LIMITS = {
     "FUZZER_DELAY": 0.5,          # Seconds between batches (Rate Limiting)
     "FUZZER_TIMEOUT": 5.0,        # Seconds before dropping a request
     "NAV_TIMEOUT": 10000,         # 10s max for page loads (Playwright)
-    "MAX_DOM_CHARS": 20000,       # Truncate DOM/Source before sending to Gemini to save tokens
+    "MAX_DOM_CHARS": 20000,       # Truncate DOM/Source before sending to the model to save tokens
 }
 
 # 2. HARD CAPS (The "Ceiling")

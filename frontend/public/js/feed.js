@@ -1,8 +1,8 @@
-import { state, BACKEND_URL } from './config.js';
+import { state, BACKEND_URL, fmtTime } from './config.js';
 
 export function addToFeed(data) {
     const feedContent = document.getElementById('feed-content');
-    const timestamp = new Date(data.timestamp).toLocaleTimeString();
+    const timestamp = fmtTime(data.timestamp);
 
     const entry = document.createElement('div');
     entry.className = 'p-3 bg-gray-700 rounded-lg border-l-4 border-blue-500';

@@ -10,6 +10,43 @@ export const BACKEND_URL = window.location.port === SPLIT_PORT_UI
     ? `${window.location.protocol}//${window.location.hostname}:33003`
     : '';
 
+// --- Time display ---------------------------------------------------------
+// Everything is shown in Eastern time regardless of the viewer's device, so a
+// phone in another timezone still reads the same clock as the host. The backend
+// sends timezone-aware UTC ("...+00:00"), which is what makes this convert
+// correctly -- a bare ISO string with no offset would be read as device-local.
+export const DISPLAY_TZ = 'America/New_York';
+
+const TIME_OPTS = { timeZone: DISPLAY_TZ, hour: '2-digit', minute: '2-digit', second: '2-digit' };
+const DATETIME_OPTS = {
+    timeZone: DISPLAY_TZ, year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+};
+
+function toDate(ts) {
+    if (!ts) return new Date();
+    const d = ts instanceof Date ? ts : new Date(ts);
+    return isNaN(d.getTime()) ? new Date() : d;
+}
+
+// "02:25:10 PM EST"
+export function fmtTime(ts) {
+    return toDate(ts).toLocaleTimeString('en-US', TIME_OPTS) + ' ' + tzAbbrev(ts);
+}
+
+// "Oct 7, 2026, 02:25:10 PM EST"
+export function fmtDateTime(ts) {
+    return toDate(ts).toLocaleString('en-US', DATETIME_OPTS) + ' ' + tzAbbrev(ts);
+}
+
+// EST in winter, EDT in summer.
+export function tzAbbrev(ts) {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: DISPLAY_TZ, timeZoneName: 'short' })
+        .formatToParts(toDate(ts));
+    const name = parts.find(p => p.type === 'timeZoneName');
+    return name ? name.value : 'ET';
+}
+
 // Global state
 export let state = {
     currentMissionId: null,

@@ -6,7 +6,7 @@ GCS-compatible Hive partitioning scheme
 import os
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from config.config import Config
 
@@ -34,7 +34,7 @@ class HiveBucket:
         Generate Hive-style partition path
         Format: artifact_type/mission_id=<id>/[tool=<tool>/]timestamp=<YYYY-MM-DD-HH>/
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         timestamp_part = now.strftime("%Y-%m-%d-%H")
         
         parts = [
@@ -54,7 +54,7 @@ class HiveBucket:
     
     def save_screenshot(self, mission_id: int, screenshot_bytes: bytes, action: str) -> str:
         """Save screenshot to hive bucket"""
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:-3]
         filename = f"{action}_{timestamp}.jpg"
         
         partition_path = self._get_partition_path('screenshots', mission_id)
@@ -68,7 +68,7 @@ class HiveBucket:
     
     def save_tool_output(self, mission_id: int, tool_name: str, output_data: dict) -> str:
         """Save tool output to hive bucket"""
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:-3]
         filename = f"{tool_name}_{timestamp}.json"
         
         partition_path = self._get_partition_path('tool_outputs', mission_id, tool_name)
@@ -81,7 +81,7 @@ class HiveBucket:
     
     def save_network_log(self, mission_id: int, direction: str, data: dict) -> str:
         """Save network request/response to hive bucket"""
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:-3]
         filename = f"{direction}_{timestamp}.json"
         
         partition_path = self._get_partition_path('network_logs', mission_id)
@@ -94,7 +94,7 @@ class HiveBucket:
     
     def save_raw_json(self, mission_id: int, data_type: str, data: dict) -> str:
         """Save raw JSON data (plans, thoughts, etc.)"""
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:-3]
         filename = f"{data_type}_{timestamp}.json"
         
         partition_path = self._get_partition_path('raw_json', mission_id)
@@ -107,7 +107,7 @@ class HiveBucket:
     
     def save_dom_snapshot(self, mission_id: int, html_content: str) -> str:
         """Save DOM snapshot"""
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:-3]
         filename = f"snapshot_{timestamp}.html"
         
         partition_path = self._get_partition_path('dom_snapshots', mission_id)

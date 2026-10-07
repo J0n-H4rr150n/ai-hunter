@@ -13,7 +13,7 @@ import json
 import os
 import logging
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse
 
 # Import existing components
@@ -29,6 +29,7 @@ from backend.database import Database
 from backend.redis_manager import RedisManager
 from core.state_manager import StateManager
 from tools.som_browser import SoMBrowser  # Add browser import
+from core.browser_thread import ThreadedBrowser
 from core.playbook_manager import PlaybookManager
 from core.playbook_executor import PlaybookExecutor
 
@@ -86,7 +87,7 @@ async def publish_mission_update(mission_id: int, message: str, event_type: str 
         "type": event_type,
         "mission_id": mission_id,
         "message": message,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
     if screenshot:
         event_data["screenshot"] = screenshot
@@ -273,7 +274,7 @@ async def health():
     return {
         "status": "healthy",
         "database": await db.check_connection(),
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 # Frontend logging endpoint
@@ -289,7 +290,7 @@ async def log_frontend(log_entry: FrontendLog):
     log_dir = Path(__file__).parent.parent / "hive_bucket" / "logs"
     log_file = log_dir / "frontend.log"
     
-    timestamp = log_entry.timestamp or datetime.utcnow().isoformat()
+    timestamp = log_entry.timestamp or datetime.now(timezone.utc).isoformat()
     log_line = f"{timestamp} - {log_entry.level} - {log_entry.message}"
     if log_entry.data:
         log_line += f" - {json.dumps(log_entry.data)}"
@@ -366,8 +367,11 @@ async def start_mission(mission: MissionStart):
         "tool_approval_queue": tool_approval_queue
     }
     
-    # Start mission asynchronously (will pause at approval gate)
-    asyncio.create_task(run_mission(mission_id, auto_loop, target_url, mission.instructions, approval_queue, tool_approval_queue))
+    # Start mission asynchronously (will pause at approval gate). The handle is kept
+    # so /stop can cancel work already in flight rather than only setting a flag.
+    active_missions[mission_id]["task"] = asyncio.create_task(
+        run_mission(mission_id, auto_loop, target_url, mission.instructions, approval_queue, tool_approval_queue)
+    )
     
     # Publish mission started event
     await publish_mission_update(mission_id, f"🚀 Mission started: {target_url}", "mission_started")
@@ -462,16 +466,16 @@ async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: st
                 "tool_name": tool_name,
                 "tool_inputs": tool_inputs,
                 "context": context,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             await redis_mgr.publish_event("missions:all", event_data)
             print(f"[HITL Backend] Published, now waiting for response...")
             
             # Wait for approval response
-            start_time = datetime.utcnow()
+            start_time = datetime.now(timezone.utc)
             approval_response = await tool_approval_queue.get()
-            response_time_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            response_time_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
             print(f"[HITL Backend] Received response after {response_time_ms}ms: approved={approval_response.get('approved')}")
             
             # Save to database
@@ -591,7 +595,7 @@ async def start_playbook_mission(mission: PlaybookMissionStart):
         "type": "mission_started",
         "mission_id": mission_id,
         "message": f"Starting playbook: {mission.playbook_name}",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     # Publish playbook started event
@@ -601,18 +605,19 @@ async def start_playbook_mission(mission: PlaybookMissionStart):
         "playbook_name": mission.playbook_name,
         "goal": playbook.get("metadata", {}).get("description", ""),
         "total_stages": len(playbook.get("sequence", [])),
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     # Store in active missions
     active_missions[mission_id] = {
         "status": "running",
         "playbook": mission.playbook_name,
-        "started_at": datetime.utcnow().isoformat()
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "tool_approval_queue": tool_approval_queue
     }
     
     # Execute playbook in background
-    asyncio.create_task(execute_playbook_mission(
+    active_missions[mission_id]["task"] = asyncio.create_task(execute_playbook_mission(
         mission_id, mission.playbook_name, target_url, 
         mission.instructions, tracker, repo, quota, state_mgr, tool_approval_queue
     ))
@@ -646,11 +651,17 @@ async def execute_playbook_mission(
         # Create AutonomousLoop for browser/tool access
         auto_loop = AutonomousLoop(tracker, repo, quota, db)
         auto_loop.mission_id = mission_id
+
+        # Publish it immediately so /pause and /stop have something to signal.
+        if mission_id in active_missions:
+            active_missions[mission_id]["loop"] = auto_loop
         
         # Initialize browser in thread pool (Playwright sync API can't run in asyncio loop)
         backend_logger.info("[Playbook] Initializing browser...")
         loop = asyncio.get_event_loop()
-        auto_loop.browser = await loop.run_in_executor(None, lambda: SoMBrowser(headless=True))
+        auto_loop.browser = await loop.run_in_executor(
+            None, lambda: ThreadedBrowser(lambda: SoMBrowser(headless=True))
+        )
         auto_loop.tracker.set_browser(auto_loop.browser)
         
         # Get event loop for callbacks
@@ -677,12 +688,12 @@ async def execute_playbook_mission(
             
             await redis_mgr.publish_event("missions:all", {
                 "type": "tool_approval_request",
-                "approval_id": f"tool_{mission_id}_{datetime.utcnow().timestamp()}",
+                "approval_id": f"tool_{mission_id}_{datetime.now(timezone.utc).timestamp()}",
                 "mission_id": mission_id,
                 "tool_name": tool_name,
                 "tool_inputs": tool_inputs,
                 "context": context,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
             
             approval_response = await tool_approval_queue.get()
@@ -716,7 +727,7 @@ async def execute_playbook_mission(
                 "mission_id": mission_id,
                 "playbook_name": playbook_name,
                 **progress_data,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
         
         # Tool approval callback
@@ -724,7 +735,7 @@ async def execute_playbook_mission(
         
         async def async_tool_approval(tool_name: str, tool_inputs: dict, context: dict) -> dict:
             """Request tool approval from user"""
-            approval_id = f"tool_{mission_id}_{datetime.utcnow().timestamp()}"
+            approval_id = f"tool_{mission_id}_{datetime.now(timezone.utc).timestamp()}"
             
             # Publish approval request
             await redis_mgr.publish_event("missions:all", {
@@ -734,7 +745,7 @@ async def execute_playbook_mission(
                 "tool_name": tool_name,
                 "tool_inputs": tool_inputs,
                 "context": context,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
             
             # Wait for approval
@@ -770,7 +781,7 @@ async def execute_playbook_mission(
             "mission_id": mission_id,
             "playbook_name": playbook_name,
             "result": result,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
         
     except Exception as e:
@@ -780,7 +791,7 @@ async def execute_playbook_mission(
             "type": "mission_failed",
             "mission_id": mission_id,
             "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
     finally:
         # Clean up
@@ -808,7 +819,7 @@ async def create_mission_checkpoint(mission_id: int):
         return {
             "checkpoint_name": checkpoint_name,
             "mission_id": mission_id,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
         backend_logger.error(f"Failed to create checkpoint: {e}")
@@ -847,7 +858,7 @@ async def restore_mission_checkpoint(mission_id: int, checkpoint_name: str):
             "restored": True,
             "checkpoint_name": checkpoint_name,
             "mission_id": mission_id,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
     except HTTPException:
         raise
@@ -872,7 +883,7 @@ async def pause_playbook_mission(mission_id: int):
     await redis_mgr.publish_event("missions:all", {
         "type": "playbook_paused",
         "mission_id": mission_id,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     return {"paused": True, "mission_id": mission_id}
@@ -894,7 +905,7 @@ async def resume_playbook_mission(mission_id: int):
     await redis_mgr.publish_event("missions:all", {
         "type": "playbook_resumed",
         "mission_id": mission_id,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     return {"resumed": True, "mission_id": mission_id}
@@ -1038,45 +1049,103 @@ async def approve_tool(approval: dict):
 # Mission control endpoints
 @app.post("/api/missions/{mission_id}/pause")
 async def pause_mission(mission_id: int):
-    """Request mission pause after current task"""
-    if mission_id in active_missions:
-        active_missions[mission_id]["status"] = "pausing"
-        # TODO: Implement actual pause signal to autonomous loop
-        await redis_mgr.publish_event("missions:all", {
-            "type": "mission_status",
-            "mission_id": mission_id,
-            "status": "pausing"
-        })
-        return {"status": "pausing"}
-    raise HTTPException(status_code=404, detail="Mission not found")
+    """Pause the mission at the next checkpoint (sub-second in practice)."""
+    mission = active_missions.get(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+
+    if mission.get("loop") is None:
+        raise HTTPException(status_code=409, detail="Mission is still starting up")
+    mission["loop"].control.request_pause()
+    mission["status"] = "paused"
+    await db.update_mission_status(mission_id, "paused")
+    await publish_mission_update(mission_id, "⏸️ Mission paused by user", "mission_log")
+    await redis_mgr.publish_event("missions:all", {
+        "type": "mission_status",
+        "mission_id": mission_id,
+        "status": "paused"
+    })
+    return {"status": "paused"}
 
 @app.post("/api/missions/{mission_id}/resume")
 async def resume_mission(mission_id: int):
-    """Resume paused mission"""
-    if mission_id in active_missions:
-        active_missions[mission_id]["status"] = "running"
-        await redis_mgr.publish_event("missions:all", {
-            "type": "mission_status",
-            "mission_id": mission_id,
-            "status": "running"
-        })
-        return {"status": "running"}
-    raise HTTPException(status_code=404, detail="Mission not found")
+    """Resume a paused mission"""
+    mission = active_missions.get(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+
+    if mission.get("loop") is None:
+        raise HTTPException(status_code=409, detail="Mission is still starting up")
+    mission["loop"].control.resume()
+    mission["status"] = "running"
+    await db.update_mission_status(mission_id, "running")
+    await publish_mission_update(mission_id, "▶️ Mission resumed by user", "mission_log")
+    await redis_mgr.publish_event("missions:all", {
+        "type": "mission_status",
+        "mission_id": mission_id,
+        "status": "running"
+    })
+    return {"status": "running"}
 
 @app.post("/api/missions/{mission_id}/stop")
 async def stop_mission(mission_id: int):
-    """Force stop mission immediately"""
-    if mission_id in active_missions:
-        # TODO: Implement force stop
-        active_missions[mission_id]["status"] = "stopped"
-        await db.update_mission_status(mission_id, "stopped")
-        await redis_mgr.publish_event("missions:all", {
-            "type": "mission_status",
-            "mission_id": mission_id,
-            "status": "stopped"
-        })
-        return {"status": "stopped"}
-    raise HTTPException(status_code=404, detail="Mission not found")
+    """
+    Force stop a mission immediately.
+
+    Three things have to happen for this to be instant rather than "after the current
+    phase": refuse to continue (control), kill work already in flight (close the
+    browser), and drop the coroutine (cancel the task).
+    """
+    mission = active_missions.get(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+
+    auto_loop = mission.get("loop")
+
+    # 1. No further steps, and release anything blocked in a pause.
+    if auto_loop is not None:
+        auto_loop.control.request_stop()
+
+    # 2. Cancel the mission coroutine.
+    task = mission.get("task")
+    if task and not task.done():
+        task.cancel()
+
+    # 3. Kill Chromium outright. A graceful close() would be queued onto the browser
+    #    thread behind the very operation we are aborting, so it would block for as
+    #    long as that operation takes. Killing the processes makes the in-flight call
+    #    fail immediately and returns straight away.
+    browser = getattr(auto_loop, "browser", None) if auto_loop is not None else None
+    if browser is not None:
+        auto_loop.browser = None
+        try:
+            killed = browser.kill()
+            backend_logger.info(f"[Mission {mission_id}] force stop killed {killed} browser process(es)")
+        except Exception as e:
+            backend_logger.warning(f"[Mission {mission_id}] browser kill during stop: {e}")
+
+    # 4. Unblock anything waiting on an approval gate.
+    for queue_key in ("approval_queue", "tool_approval_queue"):
+        queue = mission.get(queue_key)
+        if queue is not None:
+            try:
+                queue.put_nowait({"stopped": True, "approved": False})
+            except Exception:
+                pass
+
+    mission["status"] = "stopped"
+    await db.update_mission_status(mission_id, "stopped")
+    await publish_mission_update(
+        mission_id, "⏹️ Mission force-stopped by user (all tasks terminated)", "mission_log"
+    )
+    await redis_mgr.publish_event("missions:all", {
+        "type": "mission_status",
+        "mission_id": mission_id,
+        "status": "stopped"
+    })
+
+    active_missions.pop(mission_id, None)
+    return {"status": "stopped"}
 
 class UserMessage(BaseModel):
     message: str
@@ -1090,7 +1159,7 @@ async def send_user_message(mission_id: int, msg: UserMessage):
             "type": "user_message",
             "mission_id": mission_id,
             "message": msg.message,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
         return {"status": "queued"}
     raise HTTPException(status_code=404, detail="Mission not found")
@@ -1120,7 +1189,7 @@ async def approve_iteration(mission_id: int, iteration_num: int, approval: PlanA
         "type": "iteration_started",
         "mission_id": mission_id,
         "iteration_number": iteration_num,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     return {"status": "approved", "iteration_id": iteration['id']}
@@ -1148,7 +1217,7 @@ async def replan_mission(mission_id: int):
             "mission_id": mission_id,
             "iteration_id": next_iteration_id,
             "iteration_number": current_iteration_num + 1,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
         
         return {"status": "success", "iteration_id": next_iteration_id, "iteration_number": current_iteration_num + 1}

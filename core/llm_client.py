@@ -139,7 +139,7 @@ class LocalModel:
     # -- prompt assembly ---------------------------------------------------
 
     def _build_content(self, parts: Any) -> List[Dict[str, Any]]:
-        """Flatten a Gemini-style parts list into OpenAI content blocks."""
+        """Flatten a parts list (strings + Part images) into OpenAI content blocks."""
         if not isinstance(parts, (list, tuple)):
             parts = [parts]
 

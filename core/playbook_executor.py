@@ -5,7 +5,7 @@ Bridges the declarative YAML playbooks/runbooks to imperative Python execution
 
 import asyncio
 from typing import Optional, Dict, Any, List, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core.playbook_manager import PlaybookManager
@@ -34,7 +34,7 @@ class PlaybookExecutorContext:
         self.goal = goal
         self.target_url = target_url
         self.instructions = instructions
-        self.start_time = datetime.utcnow()
+        self.start_time = datetime.now(timezone.utc)
         self.playbook_name = None
         self.playbook = None  # Full playbook definition
         self.execution_id = None
@@ -192,7 +192,7 @@ class PlaybookExecutor:
         
         # Generate checkpoint name if not provided
         if not checkpoint_name:
-            checkpoint_name = f"auto_stage_{self.context.current_stage}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+            checkpoint_name = f"auto_stage_{self.context.current_stage}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
         
         # Serialize context
         checkpoint_data = self.context.to_checkpoint_dict()
@@ -1004,7 +1004,7 @@ class PlaybookExecutor:
     def _build_execution_summary(self, status: str) -> Dict[str, Any]:
         """Build final execution summary"""
         
-        duration = (datetime.utcnow() - self.context.start_time).total_seconds()
+        duration = (datetime.now(timezone.utc) - self.context.start_time).total_seconds()
         
         return {
             'status': status,
