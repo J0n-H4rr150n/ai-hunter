@@ -1,34 +1,49 @@
 # AI Hunter
 
-Autonomous web application security testing agent. It drives a real browser, reasons about
-what it sees with a **locally hosted LLM**, and reports findings with screenshots and
-request/response evidence. Nothing is sent to a cloud model provider.
-
-The agent runs missions against a target in one of three modes:
-
-- **Autonomous** — scan the target, write its own plan, then execute it under resource caps.
-- **Runbook-guided** — follow a declarative YAML runbook (recon, IDOR, CTF) while adapting
-  each step to what it actually observes.
-- **Playbook** — chain several runbooks into a longer campaign with checkpoints.
-
-A human-in-the-loop mode can gate every tool call for approval, payload editing, or rejection,
-and that feedback is stored and retrieved on later missions.
+Autonomous web application reconnaissance agent. It drives a real browser, reasons about
+what it sees with a **locally hosted LLM**, and records everything it does — every tool
+call, every model call, every screenshot — against a Postgres store. Nothing is sent to a
+cloud model provider.
 
 > Intended for targets you own or are explicitly authorized to test.
+
+## What it does, and what it does not
+
+Being specific, because the gap matters:
+
+**It does** fingerprint a target, inspect its TLS certificate, map interactive elements,
+capture screenshots at every step, write a tactical plan with an LLM, pause for your
+approval, and record the whole run so it can be replayed and audited afterwards.
+
+**It does not** yet carry out the plan it writes. The execution loop implements three task
+types — `scan`, `fuzz`, `analyze` — so a plan step like *"POST role=admin to /api/v1/profile"*
+becomes a generic scan of the base URL. `agents/agent_brain.py` contains `SecurityAgent`, the
+step-by-step reasoner that would close this gap by choosing concrete `navigate`/`click`/`type`
+actions from a screenshot; **it is not wired into anything yet.**
+
+Measured against a purpose-built benchmark with twelve planted access-control
+vulnerabilities, it currently finds **0 of 12**. That is the number to move. Treat this as a
+reconnaissance and observability platform with a planner attached, not a scanner that finds
+bugs.
+
+## Modes
+
+- **Autonomous** — scan the target, write a plan, wait for approval, execute under resource caps.
+- **Playbook** — chain YAML runbooks into a longer campaign with checkpoints and pause/resume.
+
+A human-in-the-loop mode gates every tool call for approval, payload editing or rejection,
+and those decisions are stored for later missions.
 
 ---
 
 ## Requirements
 
 - **Python 3.12+**
-- **Docker** (for PostgreSQL + Redis)
-- **A local OpenAI-compatible LLM server** — llama.cpp's `llama-server` is what this is built
-  against. A vision-capable model is strongly recommended because the agent reasons over
-  screenshots.
+- **Docker** — for PostgreSQL 16 + pgvector, the only infrastructure dependency
+- **A local OpenAI-compatible LLM server.** Built against llama.cpp's `llama-server`. A
+  vision-capable model is strongly recommended: screenshots are a primary input.
 
 ### Model server
-
-Screenshots are a first-class input, so serve a model with a multimodal projector:
 
 ```sh
 llama-server \
@@ -38,8 +53,11 @@ llama-server \
   --ctx-size 32768 --n-gpu-layers 99 --jinja
 ```
 
-Any OpenAI-compatible endpoint works — point `LLM_BASE_URL` at it. Without a projector, set
-`LLM_SUPPORTS_VISION=false` and the agent falls back to DOM and source text only.
+Any OpenAI-compatible endpoint works — point `LLM_BASE_URL` at it. Without a vision
+projector set `LLM_SUPPORTS_VISION=false`; the agent falls back to DOM and source text.
+
+Responses are streamed, so a slow model is fine. On a 27B at Q8 (~8-12 tok/s measured) a
+plan takes about 30 seconds. See *Timeouts* below.
 
 ---
 
@@ -48,63 +66,54 @@ Any OpenAI-compatible endpoint works — point `LLM_BASE_URL` at it. Without a p
 ```sh
 git clone https://github.com/J0n-H4rr150n/ai-hunter.git
 cd ai-hunter
-cp .env.example .env          # review the LLM and database settings
+cp .env.example .env
 
-# Dependencies: PostgreSQL 16 + pgvector on :33001, Redis on :33002
-docker compose up -d postgres redis
+docker compose up -d postgres          # PostgreSQL + pgvector on :33001
 
-pip install fastapi 'uvicorn[standard]' asyncpg psycopg2-binary redis \
+pip install fastapi 'uvicorn[standard]' asyncpg psycopg2-binary \
             requests pillow numpy pyyaml alembic playwright
 playwright install chromium
 
-alembic upgrade head          # creates the schema
+alembic upgrade head
 ```
-
----
 
 ## Run
 
 ### Single port (recommended — works from a phone over Tailscale)
 
-`serve.py` hosts the SPA and the API on **one TLS origin**, so every API call is same-origin
-and the UI is usable from a phone browser without mixed-content errors.
+`serve.py` hosts the SPA and the API on **one TLS origin**, so API calls are same-origin and
+the UI works from a phone browser with no mixed-content problems.
 
 ```sh
 PORT=30170 python3 serve.py
 ```
 
-Then open `https://<your-tailscale-host>:30170/`. TLS uses the shared dev cert at
-`~/models/spa/certs/server.{crt,key}` when present and falls back to plain HTTP otherwise.
-The page ships a web manifest and icons, so it can be installed to a phone home screen.
+Open `https://<your-tailscale-host>:30170/`. TLS uses the shared dev cert at
+`~/models/spa/certs/server.{crt,key}` when present, otherwise plain HTTP. The page ships a
+web manifest and icons, so it installs to a phone home screen.
 
-To run it as a managed service:
+As a service:
 
 ```sh
 cp ai-hunter.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now ai-hunter
+systemctl --user daemon-reload && systemctl --user enable --now ai-hunter
 ```
 
 ### Split ports (Docker)
-
-The original layout, with the UI and API on separate origins over plain HTTP:
 
 ```sh
 docker compose up -d --build
 ```
 
-| Service | Port | Notes |
-|---|---|---|
-| Frontend (Express) | 33004 | Vanilla JS + Tailwind |
-| Backend (FastAPI) | 33003 | REST + SSE |
-| PostgreSQL + pgvector | 33001 | Missions, findings, traces, snapshots |
-| Redis | 33002 | Pub/sub for the live feed |
+| Service | Port |
+|---|---|
+| Frontend (Express) | 33004 |
+| Backend (FastAPI) | 33003 |
+| PostgreSQL + pgvector | 33001 |
 
 The backend container reaches the host's model server via `host.docker.internal`.
 
 ### CLI
-
-`main.py` is a terminal entrypoint that bypasses the web UI entirely:
 
 ```sh
 python3 main.py
@@ -113,47 +122,65 @@ python3 main.py
 
 ---
 
-## Using it
+## The interface
 
-1. Open the UI and click **New Mission**.
-2. Enter a target URL, and optionally instructions (`Focus on ID parameters. Don't create accounts.`).
-3. The agent scans the target, drafts a plan, and waits for approval.
-4. Approve the plan and watch the live feed: tech fingerprinting, screenshots, fuzz results,
-   and findings as they land.
-5. Open **Evidence** for screenshots, request/response metadata, and confirmed findings.
+Seven tabs, mobile-first, usable from a phone over Tailscale:
 
-Turn on **HITL** in Settings to approve or edit every individual tool call.
+| Tab | Shows |
+|---|---|
+| **Feed** | live activity; every entry expands to the full event with raw JSON |
+| **Findings** | grouped by type, summarised inline, severity-accented |
+| **Evidence** | screenshot grid with full-size view |
+| **Tools** | every tool call with inputs, outputs, status and duration |
+| **Model** | every LLM call with prompt, response, tokens and tok/s |
+| **Plan** | the current plan and iteration history |
+| **Missions** | all sessions; select one to scope the whole UI to it |
+
+On desktop, clicking a record opens a resizable panel beside the list rather than over it,
+so you can click through a set of records without dismissing anything. Every record is
+presented the same way: readable key/value pairs, then the raw JSON with a copy button.
+
+Missions can be named, and the feed is scoped to the selected session.
 
 ---
 
-## Layout
+## Observability
 
-```
-agents/      planner (strategy), agent_brain (per-step decisions), analyst (triage), scorekeeper
-core/        autonomous_loop, runbook_engine, playbook_executor, tool_mapper (action dispatch),
-             llm_client (local model transport), state_manager, quota_manager, llm_tracer
-tools/       som_browser (Playwright set-of-marks), tech_scanner, fuzzer, report_generator
-memory/      finding_repository, feedback_memory — HITL decisions and past findings
-runbooks/    declarative test procedures (recon, IDOR, CTF, brainstorm, learn, report)
-playbooks/   runbook chains
-backend/     FastAPI app, database, redis, websockets
-frontend/    vanilla-JS SPA served from frontend/public
-serve.py     single-port TLS host for the SPA + API
-hive_bucket/ evidence output: screenshots, findings, logs (gitignored)
-```
+Every run is fully recorded, which is what makes a mission auditable after the fact:
+
+- **`tool_executions`** — each call's inputs, outputs, status, error and timing
+- **`llm_traces`** — each model call's prompts, response, token counts, latency and tok/s
+- **`activity_logs`** — every event, persisted *before* it is broadcast, so the feed replays
+  losslessly even if no browser was connected while the mission ran
+- **`hive_bucket/`** — screenshots and findings on disk
+
+All timestamps are stored as `TIMESTAMPTZ` in UTC and rendered in Eastern time.
+
+---
 
 ## Safety limits
 
-`config/safety.py` holds caps the model **cannot** override — the LLM proposes actions, but the
+`config/safety.py` holds caps the model **cannot** override — the LLM proposes actions, the
 engine enforces the ceiling:
 
-- Fuzzing: max 50 IDs per batch, 5 concurrent, 0.5s between batches, 5s timeout
-- Navigation: 10s page-load timeout
+- Fuzzing: max 50 ids per batch, 5 concurrent, 0.5s between batches
+- Navigation: 45s page-load timeout (`NAV_TIMEOUT_MS`)
 - Context: DOM and source truncated to 20,000 characters before reaching the model
-- Per-phase hard caps on every action type, with conservative defaults if the planner omits a budget
+- Per-phase hard caps on every action type, with conservative defaults
 
-With a 32k context window, the 20,000-character truncation plus a screenshot is a meaningful
-share of the budget — lower `MAX_DOM_CHARS` if you see context overflows.
+With a 32k context window, 20,000 characters plus a screenshot is a large share of the
+budget — lower `MAX_DOM_CHARS` if you see overflows.
+
+## Target TLS
+
+Targets routinely present expired, self-signed or mismatched certificates. For a security
+tool that is a finding, not a reason to refuse to connect, so **certificate verification is
+off for targets by default** and the certificate is inspected instead: subject, issuer, SANs,
+validity window, self-signed status and whether it covers the host requested. Anything wrong
+is recorded as a `tls_certificate` finding.
+
+Set `VERIFY_TLS=true` to enforce verification, or `TARGET_CA_BUNDLE` to validate against a
+specific CA.
 
 ## Configuration
 
@@ -162,26 +189,61 @@ Everything is environment-driven; see `.env.example`.
 | Variable | Default | Purpose |
 |---|---|---|
 | `LLM_BASE_URL` | `http://127.0.0.1:30087/v1` | OpenAI-compatible endpoint |
-| `LLM_MODEL` | `qwen38-27b-q8` | Served model alias |
-| `LLM_SUPPORTS_VISION` | `true` | Send screenshots to the model |
-| `LLM_TIMEOUT` | `300` | Seconds; a 27B at Q8 with an image is not fast |
-| `PORT` | `30170` | Single-port host |
+| `LLM_MODEL` | `qwen38-27b-q8` | served model alias |
+| `LLM_API_KEY` | `local` | sent as a bearer token |
+| `LLM_SUPPORTS_VISION` | `true` | send screenshots to the model |
+| `LLM_TEMPERATURE` | `0.4` | |
+| `LLM_MAX_TOKENS` | `4096` | reasoning models need headroom before the answer starts |
+| `LLM_STREAM` | `true` | stream responses; what makes a slow model safe |
+| `LLM_ENABLE_THINKING` | `true` | allow the model's thinking phase |
+| `LLM_THINK_ON_JSON` | `false` | skip thinking for strict-JSON calls (measured 2.4x faster) |
+| `VERIFY_TLS` | `false` | verify target certificates |
+| `TARGET_CA_BUNDLE` | — | CA to validate targets against |
+| `PORT` | `30170` | single-port host |
 | `DATABASE_URL` | `…@127.0.0.1:33001/ai_hunter` | PostgreSQL |
-| `REDIS_URL` | `redis://127.0.0.1:33002` | Redis |
+| `HIVE_BUCKET_PATH` | `./hive_bucket` | evidence output |
 | `DISABLE_EMBEDDINGS` | `true` | pgvector semantic search over past findings |
+| `LOG_LEVEL` | `INFO` | |
+
+### Timeouts
+
+Derived from the served model rather than guessed, so a slow model is accommodated and a
+dead one is still detected:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LLM_CONNECT_TIMEOUT` | `15` | connecting; localhost should be instant |
+| `LLM_FIRST_TOKEN_TIMEOUT` | `300` | prompt ingestion plus queueing |
+| `LLM_STALL_TIMEOUT` | `60` | silence *between* tokens once generation starts |
+| `LLM_MIN_TOKENS_PER_SEC` | `4` | pessimistic floor used to derive the ceiling |
+| `LLM_TOTAL_TIMEOUT` | computed | `MAX_TOKENS / MIN_TOKENS_PER_SEC + FIRST_TOKEN_TIMEOUT` (~1324s) |
 
 Semantic search over past findings is off by default because it pulls in TensorFlow. Enable
 with `poetry install -E embeddings` and `DISABLE_EMBEDDINGS=false`.
 
+---
+
+## Layout
+
+```
+agents/      planner (strategy), agent_brain (step reasoning, not yet wired in), analyst
+core/        autonomous_loop, playbook_executor, tool_mapper, llm_client, event_bus,
+             tool_recorder, llm_recorder, mission_control, browser_thread
+tools/       som_browser (Playwright set-of-marks), tech_scanner (+TLS), fuzzer
+memory/      finding_repository, feedback_memory
+runbooks/    declarative procedures   playbooks/  runbook chains
+backend/     FastAPI app and database      frontend/  vanilla-JS SPA
+serve.py     single-port TLS host
+```
+
 ## Operations
 
 ```sh
-docker compose logs -f postgres redis           # dependency logs
-tail -f hive_bucket/logs/backend.log            # application log
+docker compose logs -f postgres
+tail -f hive_bucket/logs/ai-hunter.log
 docker compose exec postgres psql -U hunter -d ai_hunter
-alembic upgrade head                            # apply migrations
-./scripts/reset_database.sh                     # wipe and recreate
+alembic upgrade head
+./scripts/reset_database.sh
 ```
 
-Further documentation is in `docs/` — `system_architecture.md`, `llm_observability.md`,
-`EMBEDDINGS.md`, `DATABASE_RESET.md`.
+Further notes in `docs/`.
