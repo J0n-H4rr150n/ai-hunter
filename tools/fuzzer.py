@@ -92,7 +92,7 @@ class Fuzzer:
         """
         try:
             start_time = time.time()
-            response = self.session.get(url, timeout=SAFETY_LIMITS['FUZZER_TIMEOUT'])
+            response = self.session.get(url, timeout=SAFETY_LIMITS['FUZZER_TIMEOUT'], verify=Config.requests_verify())
             latency = time.time() - start_time
 
             # Log the action cost

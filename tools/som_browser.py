@@ -3,6 +3,7 @@ import time
 import json
 from typing import Dict, Any, Tuple, List, Optional
 from playwright.sync_api import sync_playwright, Page, ElementHandle, Response
+from config.config import Config
 from config.safety import SAFETY_LIMITS
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,8 @@ class SoMBrowser:
         
         # 1. CONTEXT SETUP WITH SAFETY & STATE
         self.context = self.browser.new_context(
+            # A broken certificate on a target is something to report, not a wall.
+            ignore_https_errors=not Config.VERIFY_TLS,
             storage_state=state_file if state_file else None,
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"

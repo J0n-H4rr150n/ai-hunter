@@ -16,6 +16,20 @@ class Config:
     # Storing screenshots in the hive structure rather than flat logs
     SHADOW_LOG_DIR = HIVE_BUCKET_ROOT / "screenshots"
 
+    # --- Target TLS ----------------------------------------------------------
+    # Targets routinely present expired, self-signed or mismatched certificates.
+    # For a security tool that is a finding to report, not a reason to refuse to
+    # connect, so verification is off by default and the certificate is inspected
+    # and recorded instead. VERIFY_TLS=true enforces it; TARGET_CA_BUNDLE points
+    # at a lab CA to validate against that instead.
+    VERIFY_TLS = os.getenv("VERIFY_TLS", "false").lower() == "true"
+    TARGET_CA_BUNDLE = os.getenv("TARGET_CA_BUNDLE") or None
+
+    @classmethod
+    def requests_verify(cls):
+        """Value for the `verify=` argument of a request against a target."""
+        return cls.TARGET_CA_BUNDLE or cls.VERIFY_TLS
+
     # General Settings
     DEBUG = True
     keep_alive = False

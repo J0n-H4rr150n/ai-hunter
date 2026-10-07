@@ -390,7 +390,8 @@ class AutonomousLoop:
         """Quick tech scan without full fingerprinting"""
         import requests
         try:
-            resp = requests.get(url, timeout=SAFETY_LIMITS.get('FUZZER_TIMEOUT', 15))
+            resp = requests.get(url, timeout=SAFETY_LIMITS.get('FUZZER_TIMEOUT', 15),
+                                verify=Config.requests_verify())
             return {
                 "server": resp.headers.get("Server", "Unknown"),
                 "framework": [],
