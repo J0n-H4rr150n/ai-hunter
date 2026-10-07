@@ -28,17 +28,17 @@
     <link rel="stylesheet" href="css/styles.css">
 </head>
 
-<body class="bg-gray-900 text-gray-100">
+<body class="bg-gray-900 text-gray-100 h-screen flex flex-col overflow-hidden">
     <!-- Header -->
-    <header class="bg-gray-800 border-b border-gray-700 shadow-lg">
-        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+    <header class="bg-gray-800 border-b border-gray-700 shadow-lg flex-shrink-0">
+        <div class="container mx-auto px-4 sm:px-6 py-3 sm:py-4 flex flex-wrap gap-y-2 justify-between items-center">
             <div class="flex items-center space-x-3">
-                <span class="text-3xl">🐝</span>
-                <h1 class="text-2xl font-bold text-blue-400">AI Hunter</h1>
+                <span class="text-2xl sm:text-3xl">🐝</span>
+                <h1 class="text-xl sm:text-2xl font-bold text-blue-400">AI Hunter</h1>
             </div>
-            <div class="flex items-center space-x-6">
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-2 sm:gap-x-6 min-w-0">
                 <select id="mission-selector"
-                    class="bg-gray-700 text-gray-300 rounded px-3 py-1 text-sm border border-gray-600 focus:ring-2 focus:ring-blue-500">
+                    class="bg-gray-700 text-gray-300 rounded px-3 py-1 text-sm border border-gray-600 focus:ring-2 focus:ring-blue-500 max-w-[11rem] sm:max-w-xs truncate">
                     <option value="live">🔴 Live Mission</option>
                 </select>
                 <button id="open-evidence-modal" class="text-gray-400 hover:text-gray-200 transition" title="Evidence">
@@ -59,7 +59,7 @@
     </header>
 
     <!-- Main Content - Full Window -->
-    <main class="flex w-full" style="height: calc(100vh - 72px - 64px);">
+    <main class="flex w-full flex-1 min-h-0 relative">
         <!-- Live Feed - Takes all remaining space -->
         <section id="live-feed" class="flex-1 flex flex-col bg-gray-800">
             <div class="px-6 py-4 border-b border-gray-700">
@@ -71,12 +71,12 @@
         </section>
 
         <!-- Right Sidebar - Directly touches feed, no gap -->
-        <aside id="plan-sidebar"
-            class="w-80 flex-shrink-0 transition-all duration-300 bg-gray-800 border-l border-gray-700">
+        <aside id="plan-sidebar" class="flex-shrink-0 bg-gray-800 border-l border-gray-700">
             <div class="flex flex-col h-full">
-                <!-- Sidebar Header with Toggle -->
-                <div class="bg-gray-900 px-4 py-3 border-b border-gray-700 flex justify-between items-center">
-                    <div class="flex items-center space-x-2 flex-1">
+                <!-- Sidebar Header with Toggle. The toggle lives here, outside the
+                     region that hides on collapse, so the panel is always reopenable. -->
+                <div class="sidebar-header bg-gray-900 px-3 py-3 border-b border-gray-700 flex justify-between items-center">
+                    <div class="sidebar-tabs flex items-center space-x-2 flex-1 min-w-0">
                         <button id="tab-plan"
                             class="sidebar-tab active text-sm font-semibold text-blue-300 border-b-2 border-blue-400 px-2 py-1"
                             onclick="switchSidebarTab('plan')">
@@ -93,10 +93,19 @@
                             💡 Ideas
                         </button>
                     </div>
-                    <button id="sidebar-toggle" class="text-gray-400 hover:text-gray-200 text-xl ml-2"
+                    <button id="sidebar-toggle" type="button" aria-controls="sidebar-content"
+                        aria-expanded="true" aria-label="Collapse panel" title="Collapse panel (])"
                         onclick="togglePlanSidebar()">
-                        ◀
+                        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M12.5 4.5 7 10l5.5 5.5" />
+                        </svg>
                     </button>
+                </div>
+
+                <!-- Visible only in the collapsed rail; click anywhere on it to reopen. -->
+                <div class="sidebar-rail-label" onclick="togglePlanSidebar()" title="Expand panel (])">
+                    Plan
                 </div>
 
                 <!-- Sidebar Content -->
@@ -152,14 +161,14 @@
     </main>
 
     <!-- Sticky Footer - Mission Control & Chat -->
-    <footer class="fixed bottom-0 left-0 right-0 bg-gray-800 border-t border-gray-700 shadow-lg z-40">
-        <div class="container mx-auto px-6 py-3">
-            <div class="flex items-center space-x-3">
+    <footer class="bg-gray-800 border-t border-gray-700 shadow-lg z-40 flex-shrink-0">
+        <div class="container mx-auto px-4 sm:px-6 py-3">
+            <div class="flex flex-wrap items-center gap-2 sm:gap-3">
                 <!-- Mission Control Buttons -->
                 <div class="flex space-x-2 border-r border-gray-600 pr-3">
                     <button id="pause-btn"
                         class="hidden px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm font-semibold rounded transition disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Pause after current task completes">
+                        title="Pause immediately">
                         ⏸️ Pause
                     </button>
                     <button id="resume-btn"
@@ -175,19 +184,20 @@
                 </div>
 
                 <!-- Chat Input -->
-                <div class="flex-1 flex items-center space-x-2">
+                <div class="flex-1 min-w-0 flex items-center gap-2">
                     <input type="text" id="user-message-input"
                         class="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-                        placeholder="Send message to agent (will pause after current task)..." disabled>
+                        placeholder="Send a message to the agent..." disabled>
                     <button id="send-message-btn"
-                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                        class="px-3 sm:px-4 py-2 shrink-0 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
                         disabled>
-                        📤 Send
+                        <span class="hidden sm:inline">📤 Send</span>
+                        <span class="sm:hidden">📤</span>
                     </button>
                 </div>
 
                 <!-- Status Indicator -->
-                <div id="mission-control-status" class="text-xs text-gray-400 min-w-24 text-right">
+                <div id="mission-control-status" class="text-xs text-gray-400 sm:min-w-24 text-right shrink-0">
                     No mission
                 </div>
             </div>

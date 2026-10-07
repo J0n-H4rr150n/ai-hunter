@@ -71,37 +71,123 @@ details>*:not(summary) {
 
 /* ==================== Sidebar Collapse/Expand ==================== */
 
-/* Right sidebar container */
+/*
+ * The sidebar collapses to a narrow rail rather than to zero width. The rail keeps
+ * the toggle on screen and clickable, so the panel can always be reopened -- an
+ * earlier version hid the whole aside (opacity 0 + pointer-events none) with the
+ * toggle inside it, which made collapsing a one-way trip. It also used a negative
+ * margin-right, which dragged the flex row past the viewport edge and pushed the
+ * feed off screen; width alone does the job.
+ */
+
+:root {
+    --sidebar-width: 20rem;
+    --sidebar-rail-width: 3rem;
+}
+
 #plan-sidebar {
     position: relative;
-    transition: width 0.3s ease, margin-right 0.3s ease, opacity 0.3s ease;
+    width: var(--sidebar-width);
+    transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 #plan-sidebar.collapsed {
-    width: 0 !important;
-    min-width: 0 !important;
-    margin-right: -320px;
-    opacity: 0;
-    overflow: hidden;
-    pointer-events: none;
+    width: var(--sidebar-rail-width);
 }
 
-/* Sidebar toggle button - positioned inside the sidebar header */
+/* The feed must be allowed to shrink, or long log lines force the row wider than
+   the viewport and the layout overflows to the right. */
+#live-feed {
+    min-width: 0;
+}
+
+#feed-content {
+    overflow-wrap: anywhere;
+}
+
+/* --- Toggle ------------------------------------------------------------- */
+
 #sidebar-toggle {
-    transition: transform 0.3s ease, opacity 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    flex-shrink: 0;
+    border-radius: 0.375rem;
+    color: rgb(156, 163, 175);
+    transition: background-color 0.15s ease, color 0.15s ease, transform 0.25s ease;
 }
 
 #sidebar-toggle:hover {
-    opacity: 1;
+    background: rgba(75, 85, 99, 0.6);
+    color: rgb(229, 231, 235);
 }
 
-/* Rotate arrow when collapsed */
-#plan-sidebar.collapsed #sidebar-toggle {
+#sidebar-toggle:focus-visible {
+    outline: 2px solid rgb(59, 130, 246);
+    outline-offset: 2px;
+}
+
+#sidebar-toggle svg {
+    width: 1rem;
+    height: 1rem;
+    transition: transform 0.25s ease;
+}
+
+#plan-sidebar.collapsed #sidebar-toggle svg {
     transform: rotate(180deg);
 }
 
-/* Make sidebar content invisible when collapsed */
+/* --- Collapsed (rail) state -------------------------------------------- */
+
+/* Hide everything except the toggle and the vertical label. */
+#plan-sidebar.collapsed .sidebar-tabs,
 #plan-sidebar.collapsed #sidebar-content {
-    opacity: 0;
-    transition: opacity 0.1s ease;
+    display: none;
+}
+
+#plan-sidebar.collapsed .sidebar-header {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+}
+
+/* Vertical "PLAN" affordance so the rail reads as a panel, not a stray button. */
+.sidebar-rail-label {
+    display: none;
+}
+
+#plan-sidebar.collapsed .sidebar-rail-label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    letter-spacing: 0.18em;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: rgb(107, 114, 128);
+    cursor: pointer;
+    user-select: none;
+    padding: 0.75rem 0;
+    transition: color 0.15s ease;
+}
+
+#plan-sidebar.collapsed .sidebar-rail-label:hover {
+    color: rgb(147, 197, 253);
+}
+
+/* On a phone the panel would leave no room for the feed, so it overlays instead. */
+@media (max-width: 640px) {
+    #plan-sidebar:not(.collapsed) {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 30;
+        box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+    }
 }

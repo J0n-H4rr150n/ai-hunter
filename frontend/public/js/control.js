@@ -23,7 +23,7 @@ export function initMissionControl() {
             if (statusText) statusText.textContent = 'Pausing...';
 
             addToFeed({
-                message: '⏸️ Pause requested - agent will pause after current task completes',
+                message: '⏸️ Mission paused',
                 timestamp: new Date().toISOString()
             });
         } catch (error) {

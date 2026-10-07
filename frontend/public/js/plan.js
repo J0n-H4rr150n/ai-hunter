@@ -136,32 +136,45 @@ export function updateIterationStatus(iterationNum, status) {
     }
 }
 
-export function togglePlanSidebar() {
+// Single place that puts the sidebar into a given state, so the class, the stored
+// preference and the toggle's accessible labels can never drift apart.
+function applySidebarState(collapsed) {
     const sidebar = document.getElementById('plan-sidebar');
-    const isCollapsed = sidebar.classList.contains('collapsed');
+    const toggle = document.getElementById('sidebar-toggle');
+    if (!sidebar) return;
 
-    if (isCollapsed) {
-        // Expand sidebar
-        sidebar.classList.remove('collapsed');
-        state.sidebarCollapsed = false;
-    } else {
-        // Collapse sidebar
-        sidebar.classList.add('collapsed');
-        state.sidebarCollapsed = true;
+    sidebar.classList.toggle('collapsed', collapsed);
+    state.sidebarCollapsed = collapsed;
+
+    if (toggle) {
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+        const label = collapsed ? 'Expand panel' : 'Collapse panel';
+        toggle.setAttribute('aria-label', label);
+        toggle.setAttribute('title', `${label} (])`);
     }
 
-    // Persist state to localStorage
-    localStorage.setItem('sidebarCollapsed', state.sidebarCollapsed);
+    localStorage.setItem('sidebarCollapsed', collapsed);
+}
+
+export function togglePlanSidebar() {
+    const sidebar = document.getElementById('plan-sidebar');
+    if (!sidebar) return;
+    applySidebarState(!sidebar.classList.contains('collapsed'));
 }
 
 // Restore sidebar state on page load
 export function restoreSidebarState() {
-    const wasCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
-    if (wasCollapsed) {
-        const sidebar = document.getElementById('plan-sidebar');
-        sidebar.classList.add('collapsed');
-        state.sidebarCollapsed = true;
-    }
+    applySidebarState(localStorage.getItem('sidebarCollapsed') === 'true');
+
+    // "]" toggles the panel, ignored while typing into a field.
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== ']' || e.metaKey || e.ctrlKey || e.altKey) return;
+        const el = document.activeElement;
+        const tag = el && el.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el && el.isContentEditable)) return;
+        e.preventDefault();
+        togglePlanSidebar();
+    });
 }
 
 export function updatePlanSidebar(plan, status) {
