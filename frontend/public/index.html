@@ -34,6 +34,7 @@
         </header>
     </div>
 
+    <div id="workspace">
     <main id="view">
         <!-- ===================== Feed ===================== -->
         <section id="view-feed" class="view on">
@@ -118,6 +119,17 @@
             <div id="mission-list" class="list"></div>
         </section>
     </main>
+
+    <!-- Desktop only: details open beside the list, not on top of it, so you can
+         click straight through a set of records. Mobile uses #sheet instead. -->
+    <aside id="detail-panel" aria-live="polite">
+        <div class="detail-head">
+            <h3 id="detail-title">Details</h3>
+            <button id="detail-close" class="icon-btn" aria-label="Close details">✕</button>
+        </div>
+        <div id="detail-body"></div>
+    </aside>
+    </div>
 
     <!-- Jump-to-latest pill, shown only when scrolled away from the bottom. -->
     <button id="feed-jump">

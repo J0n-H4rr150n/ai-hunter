@@ -17,11 +17,25 @@ export function initTabs() {
 
     const sheet = document.getElementById('sheet');
     sheet?.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
+
+    document.getElementById('detail-close')?.addEventListener('click', closePanel);
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        closeSheet();
+        closePanel();
+    });
+
+    // Crossing the breakpoint with something open would leave it in the wrong
+    // container, so close rather than try to migrate it mid-resize.
+    window.matchMedia(DESKTOP).addEventListener('change', () => {
+        closeSheet();
+        closePanel();
+    });
 }
 
 export function showTab(name) {
     if (!VIEWS.includes(name)) return;
+    if (name !== state.activeTab) closePanel();   // a record from another view is not relevant here
     state.activeTab = name;
 
     VIEWS.forEach(v => {
@@ -130,15 +144,33 @@ export function rawBlock(obj, id) {
         </div>`;
 }
 
-/** Open a record: summary pairs, any extra sections, then the raw JSON. */
-export function openDetail(title, obj, { skip = [], extra = '' } = {}) {
+// Wide enough for a list and a details column side by side.
+const DESKTOP = '(min-width: 1024px)';
+export const isDesktop = () => window.matchMedia(DESKTOP).matches;
+
+/**
+ * Open a record.
+ *
+ * On a desktop this fills the side panel, which stays open so the next record
+ * replaces it — clicking through a list never involves dismissing a dialog. On a
+ * narrow screen it falls back to the full-screen sheet.
+ */
+export function openDetail(title, obj, { skip = [], extra = '', source = null } = {}) {
     const id = Math.random().toString(36).slice(2, 9);
-    openSheet(title, `
+    const body = `
         ${extra}
         <h2 class="sect">Details</h2>
         ${renderKV(obj, { skip })}
         ${rawBlock(obj, id)}
-    `);
+    `;
+
+    markSelected(source);
+
+    if (isDesktop()) {
+        openPanel(title, body);
+    } else {
+        openSheet(title, body);
+    }
 
     const button = document.querySelector(`[data-copy="${id}"]`);
     button?.addEventListener('click', async () => {
@@ -155,6 +187,31 @@ export function openDetail(title, obj, { skip = [], extra = '' } = {}) {
         }
         setTimeout(() => { button.textContent = 'Copy'; }, 1500);
     });
+}
+
+
+// ---------------------------------------------------------------- side panel
+
+export function openPanel(title, bodyHtml) {
+    const panel = document.getElementById('detail-panel');
+    if (!panel) return;
+    document.getElementById('detail-title').textContent = title;
+    document.getElementById('detail-body').innerHTML = bodyHtml;
+    panel.classList.add('open');
+    document.body.classList.add('has-panel');
+}
+
+export function closePanel() {
+    document.getElementById('detail-panel')?.classList.remove('open');
+    document.body.classList.remove('has-panel');
+    markSelected(null);
+}
+
+/** Highlight whichever row the panel is describing. */
+function markSelected(el) {
+    document.querySelectorAll('.item.selected, .shot.selected')
+        .forEach(n => n.classList.remove('selected'));
+    el?.classList.add('selected');
 }
 
 // ---------------------------------------------------------------- findings
@@ -194,7 +251,8 @@ async function loadFindings() {
             el.addEventListener('click', () => {
                 const [type, idx] = el.dataset.finding.split(':');
                 const f = byType[type][Number(idx)];
-                openDetail(`${f.type} · ${f.source || ''}`, f, { skip: ['content_hash'] });
+                openDetail(`${f.type} · ${f.source || ''}`, f,
+                    { skip: ['content_hash'], source: el });
             });
         });
     } catch (e) {
@@ -324,6 +382,7 @@ async function loadEvidence() {
             el.addEventListener('click', () => {
                 const s = screenshots[Number(el.dataset.shot)];
                 openDetail(s.action || s.filename, s, {
+                    source: el,
                     extra: `<img src="${BACKEND_URL}${s.url}" alt="">`,
                 });
             });
@@ -380,6 +439,7 @@ async function loadToolCalls() {
             el.addEventListener('click', () => {
                 const c = calls[Number(el.dataset.call)];
                 openDetail(`${c.tool_name} · ${c.status}`, c, {
+                    source: el,
                     skip: ['inputs', 'outputs'],
                     extra: `
                         <p class="k">${escapeHtml(fmtDateTime(c.started_at))}
@@ -448,6 +508,7 @@ async function loadLlmTraces() {
             el.addEventListener('click', () => {
                 const t = traces[Number(el.dataset.trace)];
                 openDetail(`${t.agent_name || 'model'} · ${t.llm_model || ''}`, t, {
+                    source: el,
                     skip: ['system_prompt', 'user_prompt', 'llm_response'],
                     extra: `
                         ${t.error_message ? `<p style="color:var(--bad)">${escapeHtml(t.error_message)}</p>` : ''}
