@@ -1,4 +1,4 @@
-import { state } from './config.js';
+import { state, BACKEND_URL } from './config.js';
 
 export function addToFeed(data) {
     const feedContent = document.getElementById('feed-content');
@@ -10,7 +10,7 @@ export function addToFeed(data) {
     let screenshotHTML = '';
     if (data.screenshot) {
         const imgSrc = data.screenshot.url
-            ? `http://${window.location.hostname}:33003${data.screenshot.url}`
+            ? `${BACKEND_URL}${data.screenshot.url}`
             : `data:image/png;base64,${data.screenshot.data}`;
 
         screenshotHTML = `

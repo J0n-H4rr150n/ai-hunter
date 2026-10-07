@@ -16,7 +16,7 @@ All services run on ports **33000-33999** to avoid conflicts.
 ### 1. Prerequisites
 
 - Docker and Docker Compose installed
-- GCP Application Default Credentials (run `gcloud auth application-default login`)
+- A local OpenAI-compatible LLM server running on the host (see the main README)
 
 ### 2. Start All Services
 
@@ -87,7 +87,7 @@ docker exec -it ai-hunter-redis redis-cli
        │
 ┌──────▼──────┐
 │   Backend   │  Port 33003
-│  (FastAPI)  │  Python + Gemini
+│  (FastAPI)  │  Python + local LLM
 └──┬────┬─────┘
    │    │
    │    └──────┐
@@ -99,10 +99,14 @@ docker exec -it ai-hunter-redis redis-cli
 └─────────┘ └─────────┘
 ```
 
-## GCP Credentials
+## Model Server
 
-The backend mounts your ADC credentials from:
-- **Windows**: `%APPDATA%\gcloud\application_default_credentials.json`
-- **Linux/Mac**: `~/.config/gcloud/application_default_credentials.json`
+The backend reaches the host's `llama-server` through the `host.docker.internal` alias.
+Override the endpoint with `LLM_BASE_URL` / `LLM_MODEL` in `.env` if yours differs:
 
-Make sure you've run `gcloud auth application-default login` before starting.
+```sh
+LLM_BASE_URL=http://host.docker.internal:30087/v1
+LLM_MODEL=qwen38-27b-q8
+```
+
+No cloud credentials are required.

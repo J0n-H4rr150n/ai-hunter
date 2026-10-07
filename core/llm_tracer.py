@@ -29,7 +29,7 @@ class LLMTrace:
     
     # Model Configuration
     llm_model: str = None
-    llm_provider: str = "google_vertex"  # google_vertex, openai, anthropic, etc.
+    llm_provider: str = "local_llama"  # local_llama (llama-server), openai, anthropic, etc.
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     max_tokens: Optional[int] = None
@@ -192,18 +192,18 @@ class LLMTracer:
         return trace
 
 
-# Cost estimation (approximate)
+# Cost estimation (approximate, per token).
+# Locally served models are free to run, so they are deliberately absent here and
+# fall through to 0.0 — token counts are still recorded for context budgeting.
 LLM_COSTS = {
-    "gemini-2.5-pro": {"input": 0.000001, "output": 0.000003},  # per token
-    "gemini-2.5-flash": {"input": 0.0000001, "output": 0.0000003},
     "gpt-4": {"input": 0.00003, "output": 0.00006},
     "gpt-3.5-turbo": {"input": 0.0000015, "output": 0.000002},
 }
 
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Estimate API call cost in USD"""
+    """Estimate API call cost in USD. Local models cost nothing and return 0.0."""
     if model not in LLM_COSTS:
         return 0.0
-    
+
     costs = LLM_COSTS[model]
     return (input_tokens * costs["input"]) + (output_tokens * costs["output"])

@@ -47,15 +47,16 @@ services:
     environment:
       - DATABASE_URL=postgresql://hunter:hunter_pass_dev@postgres:5432/ai_hunter
       - REDIS_URL=redis://redis:6379
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-security-swarm-demo}
-      - GCP_LOCATION=${GCP_LOCATION:-us-central1}
-      - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json
+      # llama-server runs on the host, so reach it through the gateway alias below.
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:30087/v1}
+      - LLM_MODEL=${LLM_MODEL:-qwen38-27b-q8}
       - HIVE_BUCKET_PATH=/app/hive_bucket
     ports:
       - "33003:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./:/app
-      - ${APPDATA}/gcloud/application_default_credentials.json:/app/gcp-credentials.json:ro
       - ./hive_bucket:/app/hive_bucket  # Hive bucket for screenshots, logs, etc.
     depends_on:
       postgres:

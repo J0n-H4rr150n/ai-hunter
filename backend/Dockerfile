@@ -31,8 +31,9 @@ RUN apt-get update && apt-get install -y \
 # Install Poetry
 RUN pip install poetry
 
-# Copy poetry files
-COPY pyproject.toml poetry.lock ./
+# poetry.lock is gitignored, so it is optional here — the trailing * keeps the build
+# working from a clean clone while still using the lock when one is present.
+COPY pyproject.toml poetry.loc[k] ./
 
 # Install dependencies
 RUN poetry config virtualenvs.create false \

@@ -1,13 +1,11 @@
 import json
-import vertexai
-from vertexai.generative_models import GenerativeModel, Part
+from core.llm_client import LocalModel, Part
 from config.safety import HARD_CAPS
 from config.config import Config
 
 class TacticalPlanner:
     def __init__(self):
-        vertexai.init(project=Config.GCP_PROJECT_ID, location=Config.GCP_LOCATION)
-        self.model = GenerativeModel("gemini-2.5-pro")
+        self.model = LocalModel(Config.LLM_MODEL)
         
     def generate_plan(self, goal: str, triad: dict, tech_report: dict) -> dict:
         """

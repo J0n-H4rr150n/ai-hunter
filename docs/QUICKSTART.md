@@ -5,7 +5,7 @@ Get up and running with AI Hunter in 5 minutes.
 ## Prerequisites
 
 - **Docker Desktop** (with Docker Compose v2+)
-- **Google Cloud credentials** with Vertex AI API enabled
+- **A local OpenAI-compatible LLM server** (llama.cpp `llama-server`), ideally vision-capable
 - **Port availability**: 33001-33004
 
 ## Setup Steps
@@ -17,26 +17,29 @@ git clone https://github.com/J0n-H4rr150n/ai-hunter.git
 cd ai-hunter
 ```
 
-### 2. Configure Google Cloud Credentials
+### 2. Start Your Local Model
 
-AI Hunter uses Google Vertex AI for LLM capabilities. You need a service account key:
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create or select a project
-3. Enable **Vertex AI API**
-4. Create a service account with Vertex AI User role
-5. Download the JSON key file
-6. Save it as `gcp-credentials.json` in the project root
+AI Hunter talks to a local OpenAI-compatible endpoint — no cloud credentials.
 
 ```bash
-# Make sure the file is in the root directory
-ls gcp-credentials.json  # Should exist
+llama-server \
+  --model  ~/models/Qwen3.8-27B-MTP-GGUF/Qwen3.8-27B-MTP-Q8_0.gguf \
+  --mmproj ~/models/Qwen3.8-27B-MTP-GGUF/mmproj-F32.gguf \
+  --host 0.0.0.0 --port 30087 --alias qwen38-27b-q8 \
+  --ctx-size 32768 --n-gpu-layers 99 --jinja
+```
+
+Then confirm `.env` points at it:
+
+```bash
+LLM_BASE_URL=http://127.0.0.1:30087/v1
+LLM_MODEL=qwen38-27b-q8
 ```
 
 ### 3. Review Configuration (Optional)
 
 Check `config/config.py` for default settings:
-- LLM model: Gemini 2.5 Pro Preview
+- LLM endpoint: `LLM_BASE_URL` (default `http://127.0.0.1:30087/v1`)
 - Browser: Headless Chromium
 - Quotas: 100 LLM calls, 500 actions per mission
 
@@ -70,11 +73,11 @@ You should see the AI Hunter dashboard with:
 
 ### 1. Start a Test Target (Optional)
 
-If you don't have a target, use the included test app:
+Point the agent at any target you own. For a throwaway local target:
 
 ```bash
-cd test-target
-python -m http.server 8080
+mkdir -p /tmp/test-target && cd /tmp/test-target
+python3 -m http.server 8080
 ```
 
 Access it at: `http://localhost:8080`
@@ -150,7 +153,7 @@ Click **📂 Evidence** to view:
 ## Key Features
 
 ### 🤖 Autonomous Execution
-- AI-driven mission planning with Gemini 2.5 Pro
+- AI-driven mission planning with a locally hosted LLM
 - Adaptive testing based on discovered technologies
 - Smart payload selection for fuzzing
 
@@ -232,13 +235,17 @@ ports:
   - "YOUR_PORT:8000"  # Change YOUR_PORT
 ```
 
-### GCP Authentication Error
+### Model Server Unreachable
 
 ```
-Error: Could not automatically determine credentials
+Local LLM call failed after 3 attempts
 ```
 
-**Solution**: Make sure `gcp-credentials.json` is in the project root and properly formatted.
+**Solution**: Confirm the model server is up and serving the alias you configured:
+
+```bash
+curl http://127.0.0.1:30087/v1/models
+```
 
 ### Container Won't Start
 
@@ -287,7 +294,7 @@ ai-hunter/
 ├── memory/               # Finding repository
 ├── tools/                # Scanner, Fuzzer, Browser
 ├── docker-compose.yml    # Service orchestration
-└── gcp-credentials.json  # Your GCP key (gitignored)
+└── serve.py              # Single-port TLS host for phone/Tailscale access
 ```
 
 ## Next Steps

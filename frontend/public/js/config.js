@@ -1,7 +1,14 @@
-// Backend connection
-export const BACKEND_URL = window.location.hostname === 'localhost'
-    ? 'http://localhost:33003'
-    : `http://${window.location.hostname}:33003`;
+// Backend connection.
+//
+// Single-port mode (serve.py) hosts the API on this same origin, so an empty base
+// keeps every fetch relative — that is what makes HTTPS-over-Tailscale work from a
+// phone without mixed-content errors. The split Docker setup serves the UI from
+// :33004 with the API on :33003, so fall back to the explicit port there.
+const SPLIT_PORT_UI = '33004';
+
+export const BACKEND_URL = window.location.port === SPLIT_PORT_UI
+    ? `${window.location.protocol}//${window.location.hostname}:33003`
+    : '';
 
 // Global state
 export let state = {

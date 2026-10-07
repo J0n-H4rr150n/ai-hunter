@@ -262,8 +262,10 @@ async def event_stream(mission_id: Optional[int] = None):
         await pubsub.close()
 
 # Routes
-@app.get("/")
-async def root():
+# NOTE: "/" is deliberately not claimed here. In single-port mode (serve.py) the SPA
+# is mounted at the root, so the API advertises itself under /api/status instead.
+@app.get("/api/status")
+async def api_status():
     return {"status": "online", "service": "AI Hunter API"}
 
 @app.get("/health")
