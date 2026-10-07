@@ -126,14 +126,19 @@ class LocalModel:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
+        on_progress=None,
     ):
         self.model = model or Config.LLM_MODEL
         self.system_instruction = system_instruction
         self.base_url = (base_url or Config.LLM_BASE_URL).rstrip("/")
         self.temperature = Config.LLM_TEMPERATURE if temperature is None else temperature
         self.max_tokens = max_tokens or Config.LLM_MAX_TOKENS
-        self.timeout = timeout or Config.LLM_TIMEOUT
+        # Only a stall deadline, not a total one: see Config for why.
+        self.stall_timeout = timeout or Config.LLM_STALL_TIMEOUT
         self.supports_vision = Config.LLM_SUPPORTS_VISION
+        # Called with (elapsed_seconds, tokens_so_far) while a slow generation runs,
+        # so the UI can show the agent is thinking rather than looking hung.
+        self.on_progress = on_progress
         self._endpoint = f"{self.base_url}/chat/completions"
 
     # -- prompt assembly ---------------------------------------------------
@@ -175,6 +180,107 @@ class LocalModel:
         flush()
         return content or [{"type": "text", "text": ""}]
 
+    # -- transport ---------------------------------------------------------
+
+    def _headers(self) -> Dict[str, str]:
+        return {"Authorization": f"Bearer {Config.LLM_API_KEY}"}
+
+    def _deadline_exceeded(self, started: float) -> bool:
+        return bool(Config.LLM_TOTAL_TIMEOUT) and (time.monotonic() - started) > Config.LLM_TOTAL_TIMEOUT
+
+    def _stream(self, payload: Dict[str, Any]):
+        """
+        Read the completion as a stream.
+
+        Streaming is what makes a slow model safe to use: tokens arrive steadily, so
+        the only deadline is the silence between them. A non-streaming request sends
+        nothing until the whole answer is ready, which turns the read timeout into a
+        total-duration limit and kills long but perfectly healthy generations.
+        """
+        started = time.monotonic()
+        last_report = started
+        chunks: List[str] = []
+        reasoning: List[str] = []
+        finish_reason = None
+        usage = None
+
+        with requests.post(
+            self._endpoint,
+            json=payload,
+            headers=self._headers(),
+            stream=True,
+            # (connect, read): read is the gap between chunks, not the total.
+            timeout=(Config.LLM_CONNECT_TIMEOUT, self.stall_timeout),
+        ) as resp:
+            resp.raise_for_status()
+
+            for raw in resp.iter_lines(decode_unicode=True):
+                if raw is None:
+                    continue
+                line = raw.strip()
+                if not line:
+                    continue
+                if not line.startswith("data:"):
+                    continue
+
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+
+                try:
+                    event = json.loads(data)
+                except json.JSONDecodeError:
+                    # A malformed chunk is worth noting but not worth aborting on.
+                    continue
+
+                if event.get("usage"):
+                    usage = event["usage"]
+
+                for choice in event.get("choices", []):
+                    delta = choice.get("delta") or {}
+                    if delta.get("content"):
+                        chunks.append(delta["content"])
+                    if delta.get("reasoning_content"):
+                        reasoning.append(delta["reasoning_content"])
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+
+                now = time.monotonic()
+                if self.on_progress and (now - last_report) >= Config.LLM_PROGRESS_INTERVAL:
+                    last_report = now
+                    try:
+                        self.on_progress(now - started, len(chunks) + len(reasoning))
+                    except Exception:
+                        pass   # progress reporting must never break generation
+
+                if self._deadline_exceeded(started):
+                    raise TimeoutError(
+                        f"generation exceeded LLM_TOTAL_TIMEOUT "
+                        f"({Config.LLM_TOTAL_TIMEOUT}s) after {len(chunks)} tokens"
+                    )
+
+        text = "".join(chunks)
+        if not text.strip() and reasoning:
+            text = "".join(reasoning)
+        return text, finish_reason, usage, {"usage": usage, "streamed": True}
+
+    def _blocking(self, payload: Dict[str, Any]):
+        """Non-streaming fallback, for servers that do not support SSE."""
+        resp = requests.post(
+            self._endpoint,
+            json=payload,
+            headers=self._headers(),
+            timeout=(Config.LLM_CONNECT_TIMEOUT, Config.LLM_TOTAL_TIMEOUT or self.stall_timeout),
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        choice = body["choices"][0]
+        message = choice["message"]
+        text = message.get("content") or ""
+        if not text.strip() and message.get("reasoning_content"):
+            text = message["reasoning_content"]
+        return text, choice.get("finish_reason"), body.get("usage"), body
+
     # -- generation --------------------------------------------------------
 
     def generate_content(
@@ -205,29 +311,28 @@ class LocalModel:
             "messages": messages,
             "temperature": generation_config.get("temperature", self.temperature),
             "max_tokens": generation_config.get("max_output_tokens", self.max_tokens),
-            "stream": False,
+            "stream": Config.LLM_STREAM,
         }
+        if Config.LLM_STREAM:
+            # Ask for usage in the terminal chunk so token counts survive streaming.
+            payload["stream_options"] = {"include_usage": True}
         if wants_json:
             payload["response_format"] = {"type": "json_object"}
+
+        thinking = Config.LLM_ENABLE_THINKING and (Config.LLM_THINK_ON_JSON or not wants_json)
+        if not thinking:
+            # Qwen3's template honours this; servers that ignore it are unaffected.
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
 
         last_error: Optional[Exception] = None
         for attempt in range(Config.LLM_MAX_RETRIES):
             try:
-                resp = requests.post(
-                    self._endpoint,
-                    json=payload,
-                    timeout=self.timeout,
-                    headers={"Authorization": f"Bearer {Config.LLM_API_KEY}"},
-                )
-                resp.raise_for_status()
-                body = resp.json()
+                if Config.LLM_STREAM:
+                    text, finish_reason, usage, body = self._stream(payload)
+                else:
+                    text, finish_reason, usage, body = self._blocking(payload)
 
-                choice = body["choices"][0]
-                message = choice["message"]
-                text = message.get("content") or ""
-                # llama-server returns thinking separately when reasoning is split out.
-                if not text.strip() and message.get("reasoning_content"):
-                    text = message["reasoning_content"]
+                choice = {"finish_reason": finish_reason}
 
                 if not text.strip():
                     # An empty completion usually means the prompt filled the context
@@ -235,10 +340,9 @@ class LocalModel:
                     # Say which, rather than failing later on a JSON parse.
                     raise RuntimeError(
                         f"model returned an empty completion "
-                        f"(finish_reason={choice.get('finish_reason')!r}, "
-                        f"usage={body.get('usage')}). The prompt is likely too long "
-                        f"for the served context window, or max_tokens was consumed "
-                        f"by reasoning."
+                        f"(finish_reason={finish_reason!r}, usage={usage}). "
+                        f"The prompt is likely too long for the served context "
+                        f"window, or max_tokens was consumed by reasoning."
                     )
 
                 text = _extract_json(text) if wants_json else _strip_reasoning(text)
@@ -252,7 +356,7 @@ class LocalModel:
                             f"first 300 chars: {text[:300]!r}"
                         ) from e
 
-                return LocalResponse(text, body.get("usage"), body)
+                return LocalResponse(text, usage, body)
 
             except RuntimeError as e:
                 # An empty completion is deterministic — the prompt does not fit, or

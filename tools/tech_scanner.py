@@ -1,4 +1,5 @@
 import requests
+from config.safety import SAFETY_LIMITS
 import re
 from config.config import Config
 
@@ -62,7 +63,7 @@ class TechScanner:
             # Tally cost
             self.quota.tally("actions", 1)
             
-            response = self.session.get(url, timeout=5)
+            response = self.session.get(url, timeout=SAFETY_LIMITS['FUZZER_TIMEOUT'])
             technologies = self._fingerprint(response)
             
             if technologies:

@@ -4,8 +4,10 @@ from config.safety import HARD_CAPS
 from config.config import Config
 
 class TacticalPlanner:
-    def __init__(self):
-        self.model = LocalModel(Config.LLM_MODEL)
+    def __init__(self, on_progress=None):
+        # on_progress(elapsed_seconds, tokens) is called periodically during long
+        # generations so the UI can show the model is working, not wedged.
+        self.model = LocalModel(Config.LLM_MODEL, on_progress=on_progress)
         
     def complete(self, prompt: str, max_tokens: int = 1024) -> str:
         """

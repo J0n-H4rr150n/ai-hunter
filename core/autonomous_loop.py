@@ -14,6 +14,7 @@ from core.tool_recorder import ToolRecorder, NULL_RECORDER
 from memory.finding_repository import FindingRepository
 from core.agent_tracker import AgentTracker
 from config.config import Config
+from config.safety import SAFETY_LIMITS
 from core.quota_manager import QuotaManager
 from core.playbook_executor import PlaybookExecutor, PlaybookExecutionError
 
@@ -125,6 +126,12 @@ class AutonomousLoop:
         
         return approval_response
 
+    def _llm_progress(self, label: str):
+        """Report that a long generation is still running, to the feed."""
+        def report(elapsed: float, tokens: int):
+            self.log_to_ui(f"[LLM] ⏳ {label}: {int(elapsed)}s elapsed, {tokens} tokens so far...")
+        return report
+
     async def start_mission(self, goal: str, target_url: str, instructions: str = None):
         """Bootstraps the mission and starts the loop with LLM-generated plan and human approval."""
         
@@ -161,7 +168,7 @@ class AutonomousLoop:
                 triad = self.browser.get_snapshot_triad()
 
                 # Generate plan with LLM
-                tactical_planner = TacticalPlanner()
+                tactical_planner = TacticalPlanner(on_progress=self._llm_progress("planning"))
                 self.log_to_ui("[Planner] Synthesizing Tech Stack & Visuals into Plan...")
                 return tactical_planner.generate_plan(goal, triad, tech_report)
 
@@ -327,7 +334,7 @@ class AutonomousLoop:
         """Quick tech scan without full fingerprinting"""
         import requests
         try:
-            resp = requests.get(url, timeout=5)
+            resp = requests.get(url, timeout=SAFETY_LIMITS.get('FUZZER_TIMEOUT', 15))
             return {
                 "server": resp.headers.get("Server", "Unknown"),
                 "framework": [],
@@ -935,7 +942,7 @@ class AutonomousLoop:
         # Generate new plan with LLM
         try:
             from agents.planner import TacticalPlanner
-            planner = TacticalPlanner()
+            planner = TacticalPlanner(on_progress=self._llm_progress("replanning"))
             
             # Get current page snapshot if browser is available
             triad = None

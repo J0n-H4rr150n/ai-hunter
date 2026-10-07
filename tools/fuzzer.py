@@ -4,6 +4,7 @@ import string
 import time
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from config.config import Config
+from config.safety import SAFETY_LIMITS
 
 class Fuzzer:
     """
@@ -91,7 +92,7 @@ class Fuzzer:
         """
         try:
             start_time = time.time()
-            response = self.session.get(url, timeout=3)
+            response = self.session.get(url, timeout=SAFETY_LIMITS['FUZZER_TIMEOUT'])
             latency = time.time() - start_time
 
             # Log the action cost

@@ -17,6 +17,7 @@ pattern the UI callback already uses.
 
 import asyncio
 import logging
+import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -26,7 +27,9 @@ logger = logging.getLogger(__name__)
 # Tool payloads include DOM dumps and raw page source. Keep rows readable and the
 # database small; the untruncated artefacts are already written to hive_bucket.
 MAX_FIELD_CHARS = 4000
-DB_TIMEOUT_SECONDS = 10
+# The event loop can be busy while a slow model streams; a record is worth waiting
+# for rather than dropping, and the insert itself is milliseconds.
+DB_TIMEOUT_SECONDS = float(os.getenv("TOOL_RECORD_TIMEOUT", "120"))
 
 
 def truncate(value: Any, limit: int = MAX_FIELD_CHARS) -> Any:

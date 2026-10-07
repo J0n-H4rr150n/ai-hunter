@@ -1,4 +1,6 @@
 # config/safety.py
+import os
+
 
 # 1. PARAMETER LIMITS (Immutable physics of the engine)
 # These are code-level constraints that the LLM cannot override.
@@ -6,8 +8,10 @@ SAFETY_LIMITS = {
     "FUZZER_MAX_RANGE": 50,       # Max IDs to scan in one batch (e.g., 1-50)
     "FUZZER_MAX_CONCURRENCY": 5,  # Max threads/connections
     "FUZZER_DELAY": 0.5,          # Seconds between batches (Rate Limiting)
-    "FUZZER_TIMEOUT": 5.0,        # Seconds before dropping a request
-    "NAV_TIMEOUT": 10000,         # 10s max for page loads (Playwright)
+    "FUZZER_TIMEOUT": float(os.getenv("FUZZER_TIMEOUT", "15")),   # Seconds before dropping a request
+    # Page loads on a lab target behind a tunnel can be slow; this is a guardrail
+    # against hanging forever, not a performance assumption.
+    "NAV_TIMEOUT": int(os.getenv("NAV_TIMEOUT_MS", "45000")),
     "MAX_DOM_CHARS": 20000,       # Truncate DOM/Source before sending to the model to save tokens
 }
 

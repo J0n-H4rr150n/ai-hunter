@@ -223,6 +223,10 @@ class PlaybookMissionStart(BaseModel):
 class PlanApproval(BaseModel):
     plan: dict
 
+# Long gaps are normal while the model generates, so keep the stream warm.
+SSE_KEEPALIVE_SECONDS = 15
+
+
 def _sse(event: dict) -> str:
     return f"event: {event.get('type', 'message')}\ndata: {json.dumps(event, default=str)}\n\n"
 
@@ -252,7 +256,16 @@ async def event_stream(mission_id: Optional[int] = None, replay_after: int = 0):
                     if live.get("_log_id") not in seen:
                         yield _sse(live)
 
-            async for event in sub.events():
+            # A slow model means minutes can pass with no events. Without traffic,
+            # browsers and any intermediary will eventually drop an idle SSE
+            # connection, and the UI would silently stop updating. A comment line
+            # keeps it alive and costs nothing.
+            while True:
+                try:
+                    event = await asyncio.wait_for(sub.queue.get(), timeout=SSE_KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
                 yield _sse(event)
         except asyncio.CancelledError:
             backend_logger.info(f"SSE stream closed (mission={mission_id})")
@@ -1366,45 +1379,65 @@ async def replan_mission(mission_id: int):
         await db.update_mission_status(mission_id, "running")
         await publish_mission_update(mission_id, "🔄 Resuming mission for another iteration...", "mission_log")
 
+    auto_loop = active_missions[mission_id]['loop']
+    iterations = await db.get_iterations_for_mission(mission_id)
+    current_iteration_num = len(iterations)
+
+    # Planning is an LLM call and can take minutes on a local model. Do it in the
+    # background and answer straight away: an HTTP request left hanging for the
+    # duration will be abandoned by the browser long before the model finishes.
+    task = asyncio.create_task(
+        plan_and_run_iteration(mission_id, auto_loop, current_iteration_num)
+    )
+    task.add_done_callback(
+        log_unhandled(backend_logger, f"mission {mission_id} iteration {current_iteration_num + 1}")
+    )
+    active_missions[mission_id]["task"] = task
+
+    return {
+        "status": "started",
+        "mission_id": mission_id,
+        "iteration_number": current_iteration_num + 1,
+        "message": "Planning the next iteration; progress will appear in the feed.",
+    }
+
+
+async def plan_and_run_iteration(mission_id: int, auto_loop: AutonomousLoop, current_iteration_num: int):
+    """Generate the next iteration's plan, then execute it."""
     try:
-        # Get the autonomous loop instance
-        auto_loop = active_missions[mission_id]['loop']
-        
-        # Get current iteration count
-        iterations = await db.get_iterations_for_mission(mission_id)
-        current_iteration_num = len(iterations)
-        
-        # Generate next iteration plan
-        next_iteration_id = await auto_loop.generate_next_iteration_plan(mission_id, current_iteration_num)
-        
-        # Publish event
+        await publish_mission_update(
+            mission_id, f"🧠 Planning iteration {current_iteration_num + 1}...", "mission_log"
+        )
+        next_iteration_id = await auto_loop.generate_next_iteration_plan(
+            mission_id, current_iteration_num
+        )
+
         await events.publish_event("missions:all", {
             "type": "replan_complete",
             "mission_id": mission_id,
             "iteration_id": next_iteration_id,
             "iteration_number": current_iteration_num + 1,
-            "timestamp": datetime.now(timezone.utc).isoformat()
         })
-        
-        # Actually run it. Planning without executing is what made the button look
-        # like it did nothing beyond printing a message.
+
         iterations = await db.get_iterations_for_mission(mission_id)
         new_iteration = next((i for i in iterations if i["id"] == next_iteration_id), None)
         plan = (new_iteration or {}).get("plan") or {}
 
-        task = asyncio.create_task(
-            run_iteration_task(mission_id, auto_loop, next_iteration_id, plan)
-        )
-        task.add_done_callback(
-            log_unhandled(backend_logger, f"mission {mission_id} iteration {current_iteration_num + 1}")
-        )
-        active_missions[mission_id]["task"] = task
+        await run_iteration_task(mission_id, auto_loop, next_iteration_id, plan)
 
-        return {"status": "success", "iteration_id": next_iteration_id,
-                "iteration_number": current_iteration_num + 1, "running": True}
+    except asyncio.CancelledError:
+        await db.update_mission_status(mission_id, "stopped")
+        raise
     except Exception as e:
-        backend_logger.error(f"Replan failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        backend_logger.error(f"[Mission {mission_id}] replan failed: {e}", exc_info=True)
+        await db.update_mission_status(mission_id, "failed")
+        await events.publish_event("missions:all", {
+            "type": "mission_failed",
+            "mission_id": mission_id,
+            "error": f"replan failed: {type(e).__name__}: {e}",
+            "traceback": traceback.format_exc(),
+        })
+        active_missions.pop(mission_id, None)
 
 
 # WebSocket endpoint removed - using SSE instead
