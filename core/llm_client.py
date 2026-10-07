@@ -133,8 +133,10 @@ class LocalModel:
         self.base_url = (base_url or Config.LLM_BASE_URL).rstrip("/")
         self.temperature = Config.LLM_TEMPERATURE if temperature is None else temperature
         self.max_tokens = max_tokens or Config.LLM_MAX_TOKENS
-        # Only a stall deadline, not a total one: see Config for why.
+        # Three distinct deadlines; see Config for how they are derived.
         self.stall_timeout = timeout or Config.LLM_STALL_TIMEOUT
+        self.first_token_timeout = Config.LLM_FIRST_TOKEN_TIMEOUT
+        self.total_timeout = Config.llm_total_timeout()
         self.supports_vision = Config.LLM_SUPPORTS_VISION
         # Called with (elapsed_seconds, tokens_so_far) while a slow generation runs,
         # so the UI can show the agent is thinking rather than looking hung.
@@ -186,7 +188,7 @@ class LocalModel:
         return {"Authorization": f"Bearer {Config.LLM_API_KEY}"}
 
     def _deadline_exceeded(self, started: float) -> bool:
-        return bool(Config.LLM_TOTAL_TIMEOUT) and (time.monotonic() - started) > Config.LLM_TOTAL_TIMEOUT
+        return (time.monotonic() - started) > self.total_timeout
 
     def _stream(self, payload: Dict[str, Any]):
         """
@@ -199,6 +201,8 @@ class LocalModel:
         """
         started = time.monotonic()
         last_report = started
+        last_chunk_at = started
+        first_token_at = None
         chunks: List[str] = []
         reasoning: List[str] = []
         finish_reason = None
@@ -209,10 +213,18 @@ class LocalModel:
             json=payload,
             headers=self._headers(),
             stream=True,
-            # (connect, read): read is the gap between chunks, not the total.
-            timeout=(Config.LLM_CONNECT_TIMEOUT, self.stall_timeout),
+            # (connect, read). The socket deadline is the widest legitimate
+            # silence — waiting for the first token. Once tokens flow, the tighter
+            # stall limit is enforced in the loop below.
+            timeout=(Config.LLM_CONNECT_TIMEOUT, self.first_token_timeout),
         ) as resp:
             resp.raise_for_status()
+
+            # requests falls back to ISO-8859-1 for text/* responses that carry no
+            # charset, and llama-server's text/event-stream does not. That silently
+            # mangled every non-ASCII character: an em dash arrived as "â".
+            # The OpenAI-compatible API is always UTF-8.
+            resp.encoding = "utf-8"
 
             for raw in resp.iter_lines(decode_unicode=True):
                 if raw is None:
@@ -246,6 +258,25 @@ class LocalModel:
                         finish_reason = choice["finish_reason"]
 
                 now = time.monotonic()
+                produced = len(chunks) + len(reasoning)
+                if produced and first_token_at is None:
+                    first_token_at = now
+                if produced:
+                    last_chunk_at = now
+
+                # Distinct failures: a server that never starts, one that dies
+                # mid-answer, and one that is simply taking too long overall.
+                if first_token_at is None and (now - started) > self.first_token_timeout:
+                    raise TimeoutError(
+                        f"no first token after {self.first_token_timeout:.0f}s "
+                        f"(prompt ingestion or a queued request should not take this long)"
+                    )
+                if first_token_at is not None and (now - last_chunk_at) > self.stall_timeout:
+                    raise TimeoutError(
+                        f"generation stalled: {self.stall_timeout:.0f}s with no token "
+                        f"after {produced} tokens"
+                    )
+
                 if self.on_progress and (now - last_report) >= Config.LLM_PROGRESS_INTERVAL:
                     last_report = now
                     try:
@@ -255,8 +286,10 @@ class LocalModel:
 
                 if self._deadline_exceeded(started):
                     raise TimeoutError(
-                        f"generation exceeded LLM_TOTAL_TIMEOUT "
-                        f"({Config.LLM_TOTAL_TIMEOUT}s) after {len(chunks)} tokens"
+                        f"generation exceeded {self.total_timeout:.0f}s "
+                        f"(budget {Config.LLM_MAX_TOKENS} tokens at a "
+                        f"{Config.LLM_MIN_TOKENS_PER_SEC} tok/s floor) "
+                        f"after {produced} tokens"
                     )
 
         text = "".join(chunks)
@@ -270,7 +303,7 @@ class LocalModel:
             self._endpoint,
             json=payload,
             headers=self._headers(),
-            timeout=(Config.LLM_CONNECT_TIMEOUT, Config.LLM_TOTAL_TIMEOUT or self.stall_timeout),
+            timeout=(Config.LLM_CONNECT_TIMEOUT, self.total_timeout),
         )
         resp.raise_for_status()
         body = resp.json()

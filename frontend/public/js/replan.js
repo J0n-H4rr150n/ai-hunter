@@ -1,31 +1,31 @@
 import { BACKEND_URL, state, apiPost } from './config.js';
 import { addToFeed } from './feed.js';
+import { renderMarkdown } from './md.js';
 
 // Show replan prompt when iteration completes
 export function showReplanPrompt(data) {
     const feedContent = document.getElementById('feed-content');
     const promptEntry = document.createElement('div');
     promptEntry.id = `replan-prompt-${data.mission_id}`;
-    promptEntry.className = 'p-4 bg-blue-900 bg-opacity-30 rounded-lg border-2 border-blue-500';
+    promptEntry.className = 'item';
+    promptEntry.style.borderColor = 'var(--accent)';
 
+    // The summary is Markdown written by the model; render it rather than dumping
+    // the raw text with literal asterisks.
     promptEntry.innerHTML = `
-        <h3 class="text-lg font-semibold text-blue-300 mb-3">
-            🔄 Continue with Iteration ${data.next_iteration || (data.iteration_number + 1)}?
-        </h3>
-        
-        <div class="mb-3 bg-gray-800 p-3 rounded">
-            <p class="text-sm font-semibold text-gray-300 mb-2">📊 Findings Summary:</p>
-            <p class="text-xs text-gray-400 whitespace-pre-wrap">${data.summary}</p>
+        <div class="item-head">
+            <strong>🔄 Continue with iteration ${data.next_iteration || (data.iteration_number + 1)}?</strong>
         </div>
-        
-        <div class="flex space-x-2">
-            <button onclick="approveReplan(${data.mission_id})" 
-                class="flex-1 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 px-4 rounded transition">
-                ✅ Continue Hunting
+
+        <h2 class="sect" style="margin-top:.6rem">Findings summary</h2>
+        <div class="md">${renderMarkdown(data.summary)}</div>
+
+        <div class="row" style="margin-top:.7rem">
+            <button onclick="approveReplan(${data.mission_id})" class="btn good inline">
+                ✅ Continue hunting
             </button>
-            <button onclick="stopMission(${data.mission_id})" 
-                class="flex-1 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold py-2 px-4 rounded transition">
-                ⏹️ Stop Mission
+            <button onclick="stopMission(${data.mission_id})" class="btn danger inline">
+                ⏹️ Stop mission
             </button>
         </div>
     `;

@@ -304,3 +304,45 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
         padding: 1rem 1.25rem 1.5rem;
     }
 }
+
+/* ===================== Rendered Markdown ===================== */
+/* Model-written summaries and plans. Tight vertical rhythm so a summary reads as
+   one block rather than a stack of loose paragraphs. */
+
+.md { font-size: .86rem; line-height: 1.55; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+
+.md h3, .md h4, .md h5, .md h6 {
+    margin: .9rem 0 .35rem;
+    font-size: .8rem;
+    font-weight: 700;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+.md h3 { font-size: .88rem; text-transform: none; letter-spacing: 0; }
+
+.md p { margin: .45rem 0; }
+.md strong { color: var(--fg); font-weight: 650; }
+.md em { color: var(--dim); font-style: italic; }
+
+.md ul, .md ol { margin: .4rem 0; padding-left: 1.2rem; }
+.md li { margin: .22rem 0; }
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md li::marker { color: var(--dim); }
+
+.md code {
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 4px;
+    padding: .05rem .3rem; font-family: ui-monospace, Menlo, monospace; font-size: .92em;
+    color: var(--warn);
+}
+.md pre {
+    background: #05080f; border: 1px solid var(--line); border-radius: 8px;
+    padding: .6rem; overflow-x: auto; margin: .5rem 0;
+}
+.md pre code { background: none; border: 0; padding: 0; color: var(--fg); }
+
+.md a { color: var(--accent); }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: .8rem 0; }

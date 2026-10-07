@@ -47,14 +47,37 @@ class Config:
     # deadline that matters is the gap *between* tokens, not the total duration:
     # a slow model is not an error, a dead one is.
     LLM_STREAM = os.getenv("LLM_STREAM", "true").lower() == "true"
+
     # Connecting should be instant on localhost; failing fast here is useful.
     LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "15"))
-    # Max silence between tokens before we call the server dead. Generous enough to
-    # cover prompt ingestion of a large context plus a screenshot.
-    LLM_STALL_TIMEOUT = float(os.getenv("LLM_STALL_TIMEOUT", "600"))
-    # Optional overall ceiling. 0 means no limit, which is the default: the model is
-    # as slow as it is, and cutting a generation off mid-answer helps nobody.
-    LLM_TOTAL_TIMEOUT = float(os.getenv("LLM_TOTAL_TIMEOUT", "0"))
+
+    # Measured floor for the served model. qwen38-27b-q8 streams at 8-12 tok/s on
+    # this box; 4 is a pessimistic floor that still flags a genuinely stuck server.
+    LLM_MIN_TOKENS_PER_SEC = float(os.getenv("LLM_MIN_TOKENS_PER_SEC", "4"))
+
+    # Time to the *first* token covers prompt ingestion (a 20k-char DOM plus a
+    # screenshot) and queueing behind another request — llama-server runs
+    # --parallel 1, and a queued call was measured waiting 113s.
+    LLM_FIRST_TOKEN_TIMEOUT = float(os.getenv("LLM_FIRST_TOKEN_TIMEOUT", "300"))
+
+    # Once tokens are flowing the gap is ~0.1s, so a minute of silence means the
+    # generation has died rather than slowed.
+    LLM_STALL_TIMEOUT = float(os.getenv("LLM_STALL_TIMEOUT", "60"))
+
+    @classmethod
+    def llm_total_timeout(cls) -> float:
+        """
+        Realistic ceiling for one call, derived rather than guessed:
+        the whole token budget at the pessimistic floor rate, plus the
+        first-token allowance. At the defaults (4096 tokens, 4 tok/s, 300s)
+        that is ~1324s — comfortably above the ~340s a full-length answer
+        actually takes at the measured 12 tok/s.
+        """
+        override = os.getenv("LLM_TOTAL_TIMEOUT")
+        if override:
+            return float(override)
+        return (cls.LLM_MAX_TOKENS / cls.LLM_MIN_TOKENS_PER_SEC) + cls.LLM_FIRST_TOKEN_TIMEOUT
+
     # How often to report "still generating" while waiting.
     LLM_PROGRESS_INTERVAL = float(os.getenv("LLM_PROGRESS_INTERVAL", "20"))
 
