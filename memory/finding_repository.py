@@ -29,7 +29,10 @@ class FindingRepository:
     Supports local semantic search if dependencies are installed.
     """
 
-    def __init__(self):
+    def __init__(self, mission_id=None):
+        # Findings were written with no record of which mission produced them, so
+        # every mission's Findings view showed every finding ever recorded.
+        self.mission_id = mission_id
         # specific bucket directory for persistent findings
         self.findings_dir = Config.HIVE_BUCKET_ROOT / "findings"
         self._ensure_storage()
@@ -89,7 +92,7 @@ class FindingRepository:
                 existing_content_str = json.dumps(existing.get('content'), sort_keys=True) if isinstance(existing.get('content'), (dict, list)) else str(existing.get('content'))
                 existing_hash = hashlib.sha256(existing_content_str.encode('utf-8')).hexdigest()[:16]
                 
-                if existing_hash == content_hash:
+                if existing_hash == content_hash and existing.get('mission_id') == self.mission_id:
                     if Config.DEBUG:
                         print(f"[Memory] Duplicate finding detected, skipping: {finding_type}/{filename}")
                     return existing['id']  # Return existing ID instead of creating duplicate
@@ -99,6 +102,7 @@ class FindingRepository:
         # Save to file immediately (no embedding needed in JSON files)
         finding_data = {
             "id": finding_id,
+            "mission_id": self.mission_id,
             "timestamp": timestamp,
             "type": finding_type,
             "source": source,

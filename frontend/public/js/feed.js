@@ -44,7 +44,7 @@ export function addToFeed(data) {
     // up to read something, leave the viewport alone and count what they are
     // missing instead of yanking them back down.
     if (state.followFeed) {
-        scrollFeedToBottom();
+        requestAnimationFrame(scrollFeedToBottom);
     } else {
         state.newEntryCount = (state.newEntryCount || 0) + 1;
         renderJumpPill();
@@ -52,16 +52,23 @@ export function addToFeed(data) {
 }
 
 // How close to the bottom still counts as "following".
-const FOLLOW_THRESHOLD_PX = 60;
+const FOLLOW_THRESHOLD_PX = 80;
 
-function isNearBottom(el) {
+// The DOCUMENT scrolls, not the feed element. The tabbed layout removed the inner
+// scroll container, so targeting #feed-content silently did nothing: its scrollTop
+// is always 0 and scrollHeight equals clientHeight.
+function scroller() {
+    return document.scrollingElement || document.documentElement;
+}
+
+function isNearBottom() {
+    const el = scroller();
     return el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_THRESHOLD_PX;
 }
 
 export function scrollFeedToBottom() {
-    const feedContent = document.getElementById('feed-content');
-    if (!feedContent) return;
-    feedContent.scrollTop = feedContent.scrollHeight;
+    const el = scroller();
+    el.scrollTop = el.scrollHeight;
     state.followFeed = true;
     state.newEntryCount = 0;
     renderJumpPill();
@@ -95,12 +102,11 @@ export function resetFeedScroll() {
 export function initScrollDetection() {
     const feedContent = document.getElementById('feed-content');
     const pill = document.getElementById('feed-jump');
-    if (!feedContent) return;
 
     // Undebounced: the previous 100ms timer meant a scroll back to the bottom did
     // not re-attach until after the next event had already been counted as missed.
-    feedContent.addEventListener('scroll', () => {
-        const following = isNearBottom(feedContent);
+    window.addEventListener('scroll', () => {
+        const following = isNearBottom();
         if (following === state.followFeed) return;
 
         state.followFeed = following;
@@ -112,8 +118,8 @@ export function initScrollDetection() {
         pill.addEventListener('click', () => scrollFeedToBottom());
     }
 
-    // Content can reflow after images (screenshots) load; stay pinned if following.
-    feedContent.addEventListener('load', (e) => {
+    // Screenshots change the page height after they decode; stay pinned if following.
+    feedContent?.addEventListener('load', (e) => {
         if (state.followFeed && e.target.tagName === 'IMG') scrollFeedToBottom();
     }, true);
 

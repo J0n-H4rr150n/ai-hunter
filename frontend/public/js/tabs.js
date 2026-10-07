@@ -66,6 +66,97 @@ export function closeSheet() {
     document.documentElement.style.overflow = '';
 }
 
+
+// ---------------------------------------------------------------- detail view
+//
+// One way of presenting a record, used by findings, tool calls, model calls and
+// evidence: readable key/value pairs first, the raw JSON underneath for copying.
+// Consistency matters more than per-view cleverness here.
+
+const SCALAR = v => v === null || ['string', 'number', 'boolean'].includes(typeof v);
+
+/** Flatten nested objects into dotted paths so everything is one scannable list. */
+function flatten(value, prefix = '', out = {}, depth = 0) {
+    if (value === null || value === undefined) {
+        out[prefix || 'value'] = '';
+        return out;
+    }
+    if (SCALAR(value)) {
+        out[prefix || 'value'] = value;
+        return out;
+    }
+    if (Array.isArray(value)) {
+        if (!value.length) { out[prefix] = '[]'; return out; }
+        if (value.every(SCALAR)) { out[prefix] = value.join(', '); return out; }
+        if (depth >= 2) { out[prefix] = `${value.length} items`; return out; }
+        value.forEach((v, i) => flatten(v, `${prefix}[${i}]`, out, depth + 1));
+        return out;
+    }
+    const entries = Object.entries(value);
+    if (!entries.length) { out[prefix] = '{}'; return out; }
+    if (depth >= 3) { out[prefix] = `${entries.length} fields`; return out; }
+    entries.forEach(([k, v]) => flatten(v, prefix ? `${prefix}.${k}` : k, out, depth + 1));
+    return out;
+}
+
+const VALUE_LIMIT = 400;
+
+export function renderKV(obj, { skip = [] } = {}) {
+    const flat = flatten(obj);
+    const rows = Object.entries(flat)
+        .filter(([k]) => !skip.some(s => k === s || k.startsWith(`${s}.`)))
+        .filter(([, v]) => v !== '' && v !== undefined);
+
+    if (!rows.length) return '<p class="k">No fields.</p>';
+
+    return `<dl class="kv">${rows.map(([k, v]) => {
+        const text = String(v);
+        const long = text.length > VALUE_LIMIT;
+        return `<dt>${escapeHtml(k)}</dt><dd class="${long ? 'long' : ''}">${escapeHtml(
+            long ? text.slice(0, VALUE_LIMIT) + ' …' : text)}</dd>`;
+    }).join('')}</dl>`;
+}
+
+/** Raw JSON with a copy button — kept so values can be lifted verbatim. */
+export function rawBlock(obj, id) {
+    const json = JSON.stringify(obj, null, 2);
+    return `
+        <div class="raw">
+            <div class="raw-head">
+                <span class="k">Raw JSON</span>
+                <button class="btn ghost inline" data-copy="${id}">Copy</button>
+            </div>
+            <pre id="raw-${id}">${escapeHtml(json)}</pre>
+        </div>`;
+}
+
+/** Open a record: summary pairs, any extra sections, then the raw JSON. */
+export function openDetail(title, obj, { skip = [], extra = '' } = {}) {
+    const id = Math.random().toString(36).slice(2, 9);
+    openSheet(title, `
+        ${extra}
+        <h2 class="sect">Details</h2>
+        ${renderKV(obj, { skip })}
+        ${rawBlock(obj, id)}
+    `);
+
+    const button = document.querySelector(`[data-copy="${id}"]`);
+    button?.addEventListener('click', async () => {
+        const text = document.getElementById(`raw-${id}`).textContent;
+        try {
+            await navigator.clipboard.writeText(text);
+            button.textContent = 'Copied';
+        } catch {
+            // clipboard API needs a secure context and permission; fall back.
+            const ta = document.createElement('textarea');
+            ta.value = text; document.body.appendChild(ta); ta.select();
+            document.execCommand('copy'); ta.remove();
+            button.textContent = 'Copied';
+        }
+        setTimeout(() => { button.textContent = 'Copy'; }, 1500);
+    });
+}
+
 // ---------------------------------------------------------------- findings
 
 async function loadFindings() {
@@ -81,32 +172,29 @@ async function loadFindings() {
 
     host.innerHTML = '<p class="empty">Loading…</p>';
     try {
-        const res = await fetch(`${BACKEND_URL}/api/missions/${missionId}/artifacts`);
-        const data = await res.json();
-        const findings = data.findings || [];
+        const findings = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}/findings`)).json();
         host.dataset.loadedFor = String(missionId);
+        setCount('findings', findings.length);
 
         if (!findings.length) {
             host.innerHTML = '<p class="empty">No findings recorded yet.</p>';
-            setCount('findings', 0);
             return;
         }
 
-        setCount('findings', findings.length);
-        host.innerHTML = findings.map((f, i) => `
-            <div class="item clickable sev-${severityOf(f)}" data-finding="${i}">
-                <div class="item-head">
-                    <strong>${escapeHtml(f.type || 'finding')}</strong>
-                    <span class="item-time">${escapeHtml(f.filename || '')}</span>
-                </div>
-                <span class="pill tag">${escapeHtml(f.type || 'general')}</span>
-            </div>`).join('');
+        // Group by type so a run of fingerprints reads as one section.
+        const byType = {};
+        findings.forEach(f => (byType[f.type || 'general'] ||= []).push(f));
+
+        host.innerHTML = Object.entries(byType).map(([type, items]) => `
+            <h2 class="sect" style="margin-top:.6rem">${escapeHtml(type)} · ${items.length}</h2>
+            ${items.map((f, i) => renderFinding(f, `${type}:${i}`)).join('')}
+        `).join('');
 
         host.querySelectorAll('[data-finding]').forEach(el => {
-            el.addEventListener('click', async () => {
-                const f = findings[Number(el.dataset.finding)];
-                const detail = await (await fetch(`${BACKEND_URL}${f.url}`)).json();
-                openSheet(f.type || 'Finding', `<pre>${escapeHtml(JSON.stringify(detail, null, 2))}</pre>`);
+            el.addEventListener('click', () => {
+                const [type, idx] = el.dataset.finding.split(':');
+                const f = byType[type][Number(idx)];
+                openDetail(`${f.type} · ${f.source || ''}`, f, { skip: ['content_hash'] });
             });
         });
     } catch (e) {
@@ -114,12 +202,90 @@ async function loadFindings() {
     }
 }
 
+// Severity drives the colour accent down the left edge of each card.
 function severityOf(f) {
     const t = (f.type || '').toLowerCase();
-    if (t.includes('vuln') || t.includes('flag') || t.includes('secret')) return 'critical';
-    if (t.includes('xss') || t.includes('idor') || t.includes('error')) return 'high';
-    if (t.includes('tech') || t.includes('fingerprint')) return 'info';
+    const c = f.content || {};
+    if (c.flag || c.secret || t.includes('flag') || t.includes('secret') || t.includes('credential')) return 'critical';
+    if (t.includes('vuln') || t.includes('idor') || t.includes('injection') || t.includes('xss')) return 'high';
+    if (t.includes('error') || t.includes('disclosure') || t.includes('exposure')) return 'medium';
+    if (t.includes('tech') || t.includes('fingerprint') || t.includes('discovery')) return 'info';
     return 'low';
+}
+
+/**
+ * One finding as a scannable card.
+ *
+ * The list used to show only the type and the filename, so every finding looked
+ * identical and the actual content required opening each one. Summarise the
+ * content inline; the sheet is there for the raw JSON when it is needed.
+ */
+function renderFinding(f, key) {
+    const c = f.content || {};
+    const sev = severityOf(f);
+    const when = f.timestamp ? fmtTime(f.timestamp) : '';
+
+    const title = c.url || c.endpoint || c.location || f.source || f.type;
+    const details = summariseContent(f.type, c);
+    const tags = (f.tags || []).filter(t => t !== 'recon').slice(0, 4);
+
+    return `
+        <div class="item clickable sev-${sev}" data-finding="${escapeHtml(key)}">
+            <div class="item-head">
+                <strong class="mono" style="word-break:break-all">${escapeHtml(String(title))}</strong>
+                <span class="item-time">${escapeHtml(when)}</span>
+            </div>
+            ${details ? `<div style="margin-top:.25rem">${details}</div>` : ''}
+            <div style="margin-top:.3rem">
+                ${tags.map(t => `<span class="pill tag">${escapeHtml(t)}</span>`).join('')}
+                ${f._unattributed ? '<span class="pill warn">earlier run</span>' : ''}
+            </div>
+        </div>`;
+}
+
+// Per-type summaries: show the thing that was actually found.
+function summariseContent(type, c) {
+    if (c.technologies && typeof c.technologies === 'object') {
+        return Object.entries(c.technologies)
+            .map(([k, v]) => `<span class="pill accent">${escapeHtml(k)}: ${escapeHtml(String(v))}</span>`)
+            .join('');
+    }
+    if (Array.isArray(c.interactive_elements)) {
+        const els = c.interactive_elements;
+        const kinds = {};
+        els.forEach(e => (kinds[e.tagName || '?'] = (kinds[e.tagName || '?'] || 0) + 1));
+        const labels = els.map(e => (e.text || '').trim()).filter(Boolean).slice(0, 3);
+        return [
+            `<span class="pill accent">${els.length} interactive element${els.length === 1 ? '' : 's'}</span>`,
+            ...Object.entries(kinds).slice(0, 4).map(([tag, n]) =>
+                `<span class="pill">${escapeHtml(tag)} ×${n}</span>`),
+            labels.length
+                ? `<div class="k" style="margin-top:.25rem">${escapeHtml(labels.join(' · '))}</div>`
+                : '',
+        ].join('');
+    }
+    if (c.title || c.status_code) {
+        return [
+            c.title ? `<span class="pill">${escapeHtml(String(c.title))}</span>` : '',
+            c.status_code ? `<span class="pill ${String(c.status_code).startsWith('2') ? 'good' : 'warn'}">HTTP ${escapeHtml(String(c.status_code))}</span>` : '',
+        ].join('');
+    }
+    if (c.evidence || c.secret || c.flag) {
+        const v = c.flag || c.secret || c.evidence;
+        return `<div class="mono" style="color:var(--bad);word-break:break-all">${escapeHtml(String(v).slice(0, 300))}</div>`;
+    }
+    if (c.payload || c.parameter) {
+        return [
+            c.parameter ? `<span class="pill">param: ${escapeHtml(String(c.parameter))}</span>` : '',
+            c.payload ? `<code>${escapeHtml(String(c.payload).slice(0, 120))}</code>` : '',
+        ].join(' ');
+    }
+    // Anything else: show the first few scalar fields rather than nothing.
+    const scalars = Object.entries(c)
+        .filter(([k, v]) => k !== 'url' && (typeof v === 'string' || typeof v === 'number'))
+        .slice(0, 3);
+    return scalars.map(([k, v]) =>
+        `<span class="pill">${escapeHtml(k)}: ${escapeHtml(String(v).slice(0, 80))}</span>`).join('');
 }
 
 // ---------------------------------------------------------------- evidence
@@ -157,8 +323,9 @@ async function loadEvidence() {
         shots.querySelectorAll('[data-shot]').forEach(el => {
             el.addEventListener('click', () => {
                 const s = screenshots[Number(el.dataset.shot)];
-                openSheet(s.action || s.filename,
-                    `<img src="${BACKEND_URL}${s.url}" alt=""><p class="k">${escapeHtml(s.filename)}</p>`);
+                openDetail(s.action || s.filename, s, {
+                    extra: `<img src="${BACKEND_URL}${s.url}" alt="">`,
+                });
             });
         });
 
@@ -212,14 +379,15 @@ async function loadToolCalls() {
         host.querySelectorAll('[data-call]').forEach(el => {
             el.addEventListener('click', () => {
                 const c = calls[Number(el.dataset.call)];
-                openSheet(`${c.tool_name} · ${c.status}`, `
-                    <p class="k">Started ${escapeHtml(fmtDateTime(c.started_at))}
-                       ${c.duration_ms != null ? `· ${c.duration_ms} ms` : ''}</p>
-                    ${c.error_message ? `<p style="color:var(--bad)">${escapeHtml(c.error_message)}</p>` : ''}
-                    <h2 class="sect">Inputs</h2>
-                    <pre>${escapeHtml(JSON.stringify(c.inputs, null, 2))}</pre>
-                    <h2 class="sect">Outputs</h2>
-                    <pre>${escapeHtml(JSON.stringify(c.outputs, null, 2))}</pre>`);
+                openDetail(`${c.tool_name} · ${c.status}`, c, {
+                    skip: ['inputs', 'outputs'],
+                    extra: `
+                        <p class="k">${escapeHtml(fmtDateTime(c.started_at))}
+                           ${c.duration_ms != null ? `· ${c.duration_ms} ms` : ''}</p>
+                        ${c.error_message ? `<p style="color:var(--bad)">${escapeHtml(c.error_message)}</p>` : ''}
+                        <h2 class="sect">Inputs</h2>${renderKV(c.inputs)}
+                        <h2 class="sect">Outputs</h2>${renderKV(c.outputs)}`,
+                });
             });
         });
     } catch (e) {
@@ -279,17 +447,16 @@ async function loadLlmTraces() {
         host.querySelectorAll('[data-trace]').forEach(el => {
             el.addEventListener('click', () => {
                 const t = traces[Number(el.dataset.trace)];
-                openSheet(`${t.agent_name || 'model'} · ${t.llm_model || ''}`, `
-                    <p class="k">${escapeHtml(fmtDateTime(t.timestamp_start))}
-                       ${t.elapsed_time_ms != null ? `· ${(t.elapsed_time_ms / 1000).toFixed(1)}s` : ''}
-                       ${t.finish_reason ? `· finish: ${escapeHtml(t.finish_reason)}` : ''}</p>
-                    ${t.error_message ? `<p style="color:var(--bad)">${escapeHtml(t.error_message)}</p>` : ''}
-                    ${t.system_prompt ? `<h2 class="sect">System prompt</h2>
-                        <pre>${escapeHtml(t.system_prompt)}</pre>` : ''}
-                    <h2 class="sect">Prompt</h2>
-                    <pre>${escapeHtml(t.user_prompt)}</pre>
-                    <h2 class="sect">Response</h2>
-                    <pre>${escapeHtml(t.llm_response || '(none)')}</pre>`);
+                openDetail(`${t.agent_name || 'model'} · ${t.llm_model || ''}`, t, {
+                    skip: ['system_prompt', 'user_prompt', 'llm_response'],
+                    extra: `
+                        ${t.error_message ? `<p style="color:var(--bad)">${escapeHtml(t.error_message)}</p>` : ''}
+                        ${t.system_prompt ? `<h2 class="sect">System prompt</h2>
+                            <pre>${escapeHtml(t.system_prompt)}</pre>` : ''}
+                        <h2 class="sect">Prompt</h2><pre>${escapeHtml(t.user_prompt)}</pre>
+                        <h2 class="sect">Response</h2>
+                        <pre>${escapeHtml(t.llm_response || '(none)')}</pre>`,
+                });
             });
         });
     } catch (e) {

@@ -91,8 +91,27 @@ export function setFeedSession(mission) {
  * Re-read the mission and update the session badge and the picker label.
  * Called on terminal/status events so a finished run stops reading as "running".
  */
-export async function refreshSessionHeader(missionId) {
-    if (!missionId || missionId !== state.currentMissionId) return;
+/**
+ * Set the active session from anywhere.
+ *
+ * Several SSE handlers used to assign state.currentMissionId directly, which left
+ * the breadcrumb, the status pill and the other tabs out of sync — the header
+ * could read "#17" while Findings still said "select a mission".
+ */
+export async function setCurrentMission(missionId, { reload = false } = {}) {
+    if (!missionId) return;
+    const changed = state.currentMissionId !== missionId;
+    state.currentMissionId = missionId;
+
+    if (changed || reload) {
+        await refreshSessionHeader(missionId, { force: true });
+        refreshActiveTab();
+    }
+}
+
+export async function refreshSessionHeader(missionId, { force = false } = {}) {
+    if (!missionId) return;
+    if (!force && missionId !== state.currentMissionId) return;
     try {
         const mission = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}`)).json();
         setFeedSession(mission);

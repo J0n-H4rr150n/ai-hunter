@@ -370,6 +370,39 @@ async def get_mission_llm_traces(mission_id: int, limit: int = 200):
     return await db.get_llm_traces(mission_id, limit=limit)
 
 
+@app.get("/api/missions/{mission_id}/findings")
+async def get_mission_findings(mission_id: int):
+    """
+    Findings for one mission, with their full content.
+
+    The artifacts endpoint only returned filenames and listed every finding on
+    disk regardless of mission, so the UI could neither scope nor summarise them.
+    """
+    findings_dir = Path(__file__).parent.parent / "hive_bucket" / "findings"
+    results = []
+    if findings_dir.exists():
+        for type_dir in sorted(findings_dir.iterdir()):
+            if not type_dir.is_dir():
+                continue
+            for finding_file in sorted(type_dir.glob("*.json")):
+                try:
+                    with open(finding_file, "r", encoding="utf-8") as fh:
+                        data = json.load(fh)
+                except (OSError, json.JSONDecodeError) as e:
+                    backend_logger.warning(f"unreadable finding {finding_file.name}: {e}")
+                    continue
+                # Findings written before mission_id existed have none; show them
+                # rather than hiding history, but mark them as unattributed.
+                if data.get("mission_id") not in (mission_id, None):
+                    continue
+                data["_filename"] = finding_file.name
+                data["_unattributed"] = data.get("mission_id") is None
+                results.append(data)
+
+    results.sort(key=lambda d: d.get("timestamp") or "")
+    return results
+
+
 @app.post("/api/missions/start")
 async def start_mission(mission: MissionStart):
     """Start a new autonomous mission"""
@@ -386,7 +419,7 @@ async def start_mission(mission: MissionStart):
     
     # Initialize components
     tracker = AgentTracker(agent_id=f"mission_{mission_id}")
-    repo = FindingRepository()
+    repo = FindingRepository(mission_id=mission_id)
     quota = QuotaManager(agent_id=f"mission_{mission_id}")
     
     auto_loop = AutonomousLoop(tracker, repo, quota, db)
@@ -655,7 +688,7 @@ async def start_playbook_mission(mission: PlaybookMissionStart):
     
     # Initialize components
     tracker = AgentTracker(agent_id=f"mission_{mission_id}")
-    repo = FindingRepository()
+    repo = FindingRepository(mission_id=mission_id)
     quota = QuotaManager(agent_id=f"mission_{mission_id}")
     state_mgr = StateManager(db)  # Fix: pass db
     
@@ -1360,7 +1393,7 @@ async def replan_mission(mission_id: int):
     resumed = mission_id not in active_missions
     if resumed:
         tracker = AgentTracker(agent_id=f"mission_{mission_id}")
-        repo = FindingRepository()
+        repo = FindingRepository(mission_id=mission_id)
         quota = QuotaManager(agent_id=f"mission_{mission_id}")
 
         auto_loop = AutonomousLoop(tracker, repo, quota, db)

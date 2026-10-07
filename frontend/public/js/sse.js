@@ -2,7 +2,7 @@ import { BACKEND_URL, state, logToBackend } from './config.js';
 import { addToFeed } from './feed.js';
 import { showPlanApproval } from './plan.js';
 import { showToolApproval } from './tools.js';
-import { updateMissionStatus, refreshSessionHeader } from './missions.js';
+import { updateMissionStatus, refreshSessionHeader, setCurrentMission } from './missions.js';
 import { enableControls, updateControlStatus } from './control.js';
 import { showReplanPrompt } from './replan.js';
 
@@ -64,8 +64,10 @@ export function connectToSSE(missionId = null, afterLogId = 0) {
     state.eventSource.addEventListener('mission_log', (event) => {
         const data = JSON.parse(event.data);
 
-        if (data.mission_id && !state.currentMissionId) {
-            state.currentMissionId = data.mission_id;
+        // Following the live stream: adopt whichever mission is talking, so the
+        // header and every tab agree on which session is on screen.
+        if (data.mission_id && data.mission_id !== state.currentMissionId) {
+            setCurrentMission(data.mission_id);
         }
 
         addToFeed({
@@ -80,7 +82,7 @@ export function connectToSSE(missionId = null, afterLogId = 0) {
         const data = JSON.parse(event.data);
 
         if (data.mission_id) {
-            state.currentMissionId = data.mission_id;
+            await setCurrentMission(data.mission_id, { reload: true });
             enableControls();
             updateControlStatus('running');
 

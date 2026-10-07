@@ -346,3 +346,43 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 
 .md a { color: var(--accent); }
 .md hr { border: 0; border-top: 1px solid var(--line); margin: .8rem 0; }
+
+/* ===================== Key/value detail ===================== */
+/* One presentation for every record type: readable pairs, raw JSON below. */
+
+.kv {
+    display: grid;
+    grid-template-columns: minmax(7rem, 34%) 1fr;
+    gap: .2rem .6rem;
+    margin: .3rem 0 .8rem;
+    font-size: .8rem;
+}
+.kv dt {
+    color: var(--dim);
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: .72rem;
+    word-break: break-word;
+    padding-top: .1rem;
+}
+.kv dd {
+    margin: 0;
+    color: var(--fg);
+    word-break: break-word;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: .2rem;
+}
+.kv dd.long { white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: .74rem; }
+
+.raw { margin-top: .8rem; }
+.raw-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: .5rem; margin-bottom: .3rem;
+}
+.raw pre { max-height: 22rem; overflow: auto; }
+
+/* Narrow screens: stack the pairs rather than squeezing both columns. */
+@media (max-width: 520px) {
+    .kv { grid-template-columns: 1fr; gap: 0 0; }
+    .kv dt { margin-top: .45rem; }
+    .kv dd { padding-bottom: .3rem; }
+}
