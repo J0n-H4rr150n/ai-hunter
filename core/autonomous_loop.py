@@ -11,6 +11,7 @@ from tools.som_browser import SoMBrowser
 from core.browser_thread import ThreadedBrowser
 from core.mission_control import MissionControl, MissionStopped, MissionAborted
 from core.tool_recorder import ToolRecorder, NULL_RECORDER
+from core.llm_recorder import LLMRecorder, NULL_LLM_RECORDER
 from memory.finding_repository import FindingRepository
 from core.agent_tracker import AgentTracker
 from config.config import Config
@@ -54,6 +55,8 @@ class AutonomousLoop:
         # Writes every tool call to tool_executions. Replaced by the backend with a
         # bound recorder; the null one keeps call sites unconditional.
         self.tool_recorder = NULL_RECORDER
+        # Writes every model call to llm_traces.
+        self.llm_recorder = NULL_LLM_RECORDER
         self.web_approval_callback = None  # For plan approval
         self.tool_approval_callback = None  # For HITL tool approval
         self.hitl_enabled = False  # HITL flag
@@ -168,7 +171,10 @@ class AutonomousLoop:
                 triad = self.browser.get_snapshot_triad()
 
                 # Generate plan with LLM
-                tactical_planner = TacticalPlanner(on_progress=self._llm_progress("planning"))
+                tactical_planner = TacticalPlanner(
+                    on_progress=self._llm_progress("planning"),
+                    recorder=self.llm_recorder,
+                )
                 self.log_to_ui("[Planner] Synthesizing Tech Stack & Visuals into Plan...")
                 return tactical_planner.generate_plan(goal, triad, tech_report)
 
@@ -899,7 +905,7 @@ class AutonomousLoop:
         # Use TacticalPlanner to generate summary
         try:
             from agents.planner import TacticalPlanner
-            planner = TacticalPlanner()
+            planner = TacticalPlanner(recorder=self.llm_recorder)
             
             prompt = f"""
             Summarize the findings from this security testing iteration:
@@ -942,7 +948,10 @@ class AutonomousLoop:
         # Generate new plan with LLM
         try:
             from agents.planner import TacticalPlanner
-            planner = TacticalPlanner(on_progress=self._llm_progress("replanning"))
+            planner = TacticalPlanner(
+                on_progress=self._llm_progress("replanning"),
+                recorder=self.llm_recorder,
+            )
             
             # Get current page snapshot if browser is available
             triad = None

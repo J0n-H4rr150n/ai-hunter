@@ -128,7 +128,7 @@ nav#tabs {
     bottom: 0; left: 0; right: 0;
     z-index: 6;
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(7, 1fr);
     background: var(--panel);
     border-top: 1px solid var(--line);
     padding-bottom: env(safe-area-inset-bottom);

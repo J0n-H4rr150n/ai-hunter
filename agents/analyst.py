@@ -3,9 +3,11 @@ from core.llm_client import LocalModel
 from config.config import Config
 
 class FindingsAnalyst:
-    def __init__(self):
+    def __init__(self, recorder=None):
         self.model = LocalModel(
             Config.LLM_MODEL,
+            recorder=recorder,
+            agent_name="FindingsAnalyst",
             system_instruction="""You are a Senior Security Analyst (SOC Tier 3) and CTF Expert.
             
             YOUR JOB:

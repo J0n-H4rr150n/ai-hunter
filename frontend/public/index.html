@@ -82,6 +82,12 @@
             <div id="tools-list" class="list"></div>
         </section>
 
+        <!-- ===================== LLM traces ===================== -->
+        <section id="view-llm" class="view">
+            <h2 class="sect">Model calls</h2>
+            <div id="llm-list" class="list"></div>
+        </section>
+
         <!-- ===================== Plan ===================== -->
         <section id="view-plan" class="view">
             <h2 class="sect">Plan</h2>
@@ -124,6 +130,8 @@
                 class="count" hidden></span></button>
         <button data-tab="evidence">▣<span class="lbl">Evidence</span></button>
         <button data-tab="tools">↯<span class="lbl">Tools</span><span id="tab-count-tools" class="count"
+                hidden></span></button>
+        <button data-tab="llm">🧠<span class="lbl">Model</span><span id="tab-count-llm" class="count"
                 hidden></span></button>
         <button data-tab="plan">▤<span class="lbl">Plan</span></button>
         <button data-tab="missions">◈<span class="lbl">Missions</span></button>

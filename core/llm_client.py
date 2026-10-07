@@ -18,6 +18,7 @@ import base64
 import json
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -127,6 +128,8 @@ class LocalModel:
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
         on_progress=None,
+        recorder=None,
+        agent_name: Optional[str] = None,
     ):
         self.model = model or Config.LLM_MODEL
         self.system_instruction = system_instruction
@@ -141,6 +144,10 @@ class LocalModel:
         # Called with (elapsed_seconds, tokens_so_far) while a slow generation runs,
         # so the UI can show the agent is thinking rather than looking hung.
         self.on_progress = on_progress
+        # Every call is written to llm_traces from here, so a new agent is traced
+        # without each one having to remember to do it.
+        self.recorder = recorder
+        self.agent_name = agent_name
         self._endpoint = f"{self.base_url}/chat/completions"
 
     # -- prompt assembly ---------------------------------------------------
@@ -357,6 +364,16 @@ class LocalModel:
             # Qwen3's template honours this; servers that ignore it are unaffected.
             payload["chat_template_kwargs"] = {"enable_thinking": False}
 
+        # Everything needed for the trace, captured before the call so a failure is
+        # recorded with the same context as a success.
+        prompt_text = "\n".join(
+            block["text"] for block in content if block.get("type") == "text"
+        )
+        image_count = sum(1 for block in content if block.get("type") == "image_url")
+        if image_count:
+            prompt_text += f"\n[{image_count} image(s) attached]"
+        started_at = datetime.now(timezone.utc)
+
         last_error: Optional[Exception] = None
         for attempt in range(Config.LLM_MAX_RETRIES):
             try:
@@ -389,6 +406,10 @@ class LocalModel:
                             f"first 300 chars: {text[:300]!r}"
                         ) from e
 
+                self._trace(
+                    prompt_text, text, started_at, usage, finish_reason,
+                    payload, status="success", retry_count=attempt,
+                )
                 return LocalResponse(text, usage, body)
 
             except RuntimeError as e:
@@ -404,10 +425,41 @@ class LocalModel:
                 if attempt < Config.LLM_MAX_RETRIES - 1:
                     time.sleep(Config.LLM_RETRY_DELAY * (attempt + 1))
 
+        self._trace(
+            prompt_text, None, started_at, None, None, payload,
+            status="failed", error=f"{type(last_error).__name__}: {last_error}",
+            retry_count=Config.LLM_MAX_RETRIES,
+        )
         raise RuntimeError(
             f"Local LLM call failed after {Config.LLM_MAX_RETRIES} attempts "
             f"({self._endpoint}, model={self.model}): {last_error}"
         ) from last_error
+
+    def _trace(self, prompt_text, response, started_at, usage, finish_reason,
+               payload, status="success", error=None, retry_count=0):
+        """Hand the call to the recorder, if one is attached."""
+        if self.recorder is None:
+            return
+        try:
+            self.recorder.record(
+                model=self.model,
+                agent_name=self.agent_name,
+                system_prompt=self.system_instruction,
+                user_prompt=prompt_text,
+                response=response,
+                started_at=started_at,
+                ended_at=datetime.now(timezone.utc),
+                usage=usage,
+                finish_reason=finish_reason,
+                temperature=payload.get("temperature"),
+                max_tokens=payload.get("max_tokens"),
+                status=status,
+                error=error,
+                retry_count=retry_count,
+            )
+        except Exception as e:   # noqa: BLE001 - tracing must never break a call
+            import logging
+            logging.getLogger(__name__).error("LLM tracing failed: %s", e, exc_info=True)
 
     # -- health ------------------------------------------------------------
 

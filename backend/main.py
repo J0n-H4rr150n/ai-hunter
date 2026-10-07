@@ -35,6 +35,7 @@ from core.playbook_manager import PlaybookManager
 from core.playbook_executor import PlaybookExecutor
 from core.mission_control import MissionStopped, MissionAborted
 from core.tool_recorder import ToolRecorder
+from core.llm_recorder import LLMRecorder
 from core.logging_setup import configure_logging, log_unhandled
 
 # Setup logging
@@ -363,6 +364,12 @@ async def get_mission_tool_calls(mission_id: int, limit: int = 500):
     return await db.get_tool_executions(mission_id, limit=limit)
 
 
+@app.get("/api/missions/{mission_id}/llm")
+async def get_mission_llm_traces(mission_id: int, limit: int = 200):
+    """Every model call made during a mission: prompt, response, tokens, timing."""
+    return await db.get_llm_traces(mission_id, limit=limit)
+
+
 @app.post("/api/missions/start")
 async def start_mission(mission: MissionStart):
     """Start a new autonomous mission"""
@@ -385,6 +392,7 @@ async def start_mission(mission: MissionStart):
     auto_loop = AutonomousLoop(tracker, repo, quota, db)
     auto_loop.events = events
     auto_loop.tool_recorder = ToolRecorder(db, mission_id, asyncio.get_running_loop())
+    auto_loop.llm_recorder = LLMRecorder(db, mission_id, asyncio.get_running_loop())
     
     # Create approval queue for this mission
     approval_queue = asyncio.Queue()
@@ -720,6 +728,7 @@ async def execute_playbook_mission(
         auto_loop.mission_id = mission_id
         auto_loop.events = events
         auto_loop.tool_recorder = ToolRecorder(db, mission_id, asyncio.get_running_loop())
+        auto_loop.llm_recorder = LLMRecorder(db, mission_id, asyncio.get_running_loop())
 
         # Publish it immediately so /pause and /stop have something to signal.
         if mission_id in active_missions:
@@ -1358,6 +1367,7 @@ async def replan_mission(mission_id: int):
         auto_loop.mission_id = mission_id
         auto_loop.events = events
         auto_loop.tool_recorder = ToolRecorder(db, mission_id, asyncio.get_running_loop())
+        auto_loop.llm_recorder = LLMRecorder(db, mission_id, asyncio.get_running_loop())
 
         main_loop = asyncio.get_running_loop()
 

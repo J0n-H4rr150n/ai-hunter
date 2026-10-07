@@ -324,9 +324,28 @@ class Database:
                 screenshot_path
             )
     
+    @staticmethod
+    def _as_datetime(value):
+        """
+        Coerce an ISO-8601 string to a datetime.
+
+        LLMTrace stores timestamps as ISO strings, but the columns are TIMESTAMPTZ
+        and asyncpg will not accept a string for them.
+        """
+        if value is None or isinstance(value, datetime):
+            return value
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+        # Treat a naive value as UTC rather than letting the server guess.
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
     async def save_llm_trace(self, trace) -> int:
         """Save LLM trace for observability"""
         trace_dict = trace.to_dict()
+        trace_dict['timestamp_start'] = self._as_datetime(trace_dict.get('timestamp_start'))
+        trace_dict['timestamp_end'] = self._as_datetime(trace_dict.get('timestamp_end'))
         
         async with self.pool.acquire() as conn:
             trace_id = await conn.fetchval(
@@ -347,10 +366,10 @@ class Database:
                     raw_request, raw_response, environment
                 )
                 VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                    $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-                    $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38,
-                    $39, $40, $41
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
+                    $23, $24, $25, $26, $27, $28, $29, $30, $31, $32,
+                    $33, $34, $35, $36, $37, $38, $39, $40, $41, $42
                 )
                 RETURNING id
                 """,
@@ -670,6 +689,24 @@ class Database:
                 FROM tool_executions
                 WHERE mission_id = $1
                 ORDER BY started_at ASC, id ASC
+                LIMIT $2
+                """,
+                mission_id, limit
+            )
+            return [dict(r) for r in rows]
+
+    async def get_llm_traces(self, mission_id: int, limit: int = 200) -> List[Dict[str, Any]]:
+        """Model calls for a mission, oldest first."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, trace_id, agent_name, llm_model, status, finish_reason,
+                       system_prompt, user_prompt, llm_response,
+                       input_tokens, output_tokens, elapsed_time_ms, tokens_per_second,
+                       error_message, retry_count, timestamp_start, timestamp_end
+                FROM llm_traces
+                WHERE mission_id = $1
+                ORDER BY timestamp_start ASC, id ASC
                 LIMIT $2
                 """,
                 mission_id, limit

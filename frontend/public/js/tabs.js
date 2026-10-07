@@ -6,7 +6,7 @@
 
 import { BACKEND_URL, state, fmtTime, fmtDateTime } from './config.js';
 
-const VIEWS = ['feed', 'findings', 'evidence', 'tools', 'plan', 'missions'];
+const VIEWS = ['feed', 'findings', 'evidence', 'tools', 'llm', 'plan', 'missions'];
 
 export function initTabs() {
     document.querySelectorAll('#tabs button').forEach(btn => {
@@ -33,11 +33,12 @@ export function showTab(name) {
     if (name === 'findings') loadFindings();
     if (name === 'evidence') loadEvidence();
     if (name === 'tools') loadToolCalls();
+    if (name === 'llm') loadLlmTraces();
 }
 
 // Called when the session changes so stale data is not left behind.
 export function refreshActiveTab() {
-    ['findings', 'evidence', 'tools'].forEach(v => {
+    ['findings', 'evidence', 'tools', 'llm'].forEach(v => {
         const el = document.getElementById(`${v}-list`) || document.getElementById('evidence-screenshots');
         if (el) el.dataset.loadedFor = '';
     });
@@ -226,6 +227,76 @@ async function loadToolCalls() {
     }
 }
 
+
+// ---------------------------------------------------------------- llm traces
+
+async function loadLlmTraces() {
+    const host = document.getElementById('llm-list');
+    const missionId = state.currentMissionId;
+    if (!host) return;
+
+    if (!missionId) {
+        host.innerHTML = '<p class="empty">Select a mission to see its model calls.</p>';
+        return;
+    }
+    if (host.dataset.loadedFor === String(missionId)) return;
+
+    host.innerHTML = '<p class="empty">Loading…</p>';
+    try {
+        const traces = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}/llm`)).json();
+        host.dataset.loadedFor = String(missionId);
+        setCount('llm', traces.length);
+
+        if (!traces.length) {
+            host.innerHTML = '<p class="empty">No model calls recorded for this mission.</p>';
+            return;
+        }
+
+        const totalIn = traces.reduce((a, t) => a + (t.input_tokens || 0), 0);
+        const totalOut = traces.reduce((a, t) => a + (t.output_tokens || 0), 0);
+        const totalMs = traces.reduce((a, t) => a + (t.elapsed_time_ms || 0), 0);
+
+        host.innerHTML = `
+            <div class="item">
+                <div class="k">Totals</div>
+                <span class="pill accent">${traces.length} calls</span>
+                <span class="pill">${totalIn.toLocaleString()} in</span>
+                <span class="pill">${totalOut.toLocaleString()} out</span>
+                <span class="pill">${(totalMs / 1000).toFixed(1)}s</span>
+            </div>` + traces.map((t, i) => `
+            <div class="item clickable ${t.status === 'failed' ? 'err' : 'ok'}" data-trace="${i}">
+                <div class="item-head">
+                    <strong>${escapeHtml(t.agent_name || 'model')}</strong>
+                    <span class="item-time">${t.elapsed_time_ms != null ? (t.elapsed_time_ms / 1000).toFixed(1) + 's' : '…'}</span>
+                </div>
+                <span class="pill ${t.status === 'failed' ? 'bad' : 'good'}">${escapeHtml(t.status || '')}</span>
+                <span class="pill">${t.input_tokens ?? '?'} in / ${t.output_tokens ?? '?'} out</span>
+                ${t.tokens_per_second ? `<span class="pill">${t.tokens_per_second.toFixed(1)} tok/s</span>` : ''}
+                <span class="item-time">${fmtTime(t.timestamp_start)}</span>
+                ${t.error_message ? `<div class="k" style="color:var(--bad)">${escapeHtml(t.error_message)}</div>` : ''}
+            </div>`).join('');
+
+        host.querySelectorAll('[data-trace]').forEach(el => {
+            el.addEventListener('click', () => {
+                const t = traces[Number(el.dataset.trace)];
+                openSheet(`${t.agent_name || 'model'} · ${t.llm_model || ''}`, `
+                    <p class="k">${escapeHtml(fmtDateTime(t.timestamp_start))}
+                       ${t.elapsed_time_ms != null ? `· ${(t.elapsed_time_ms / 1000).toFixed(1)}s` : ''}
+                       ${t.finish_reason ? `· finish: ${escapeHtml(t.finish_reason)}` : ''}</p>
+                    ${t.error_message ? `<p style="color:var(--bad)">${escapeHtml(t.error_message)}</p>` : ''}
+                    ${t.system_prompt ? `<h2 class="sect">System prompt</h2>
+                        <pre>${escapeHtml(t.system_prompt)}</pre>` : ''}
+                    <h2 class="sect">Prompt</h2>
+                    <pre>${escapeHtml(t.user_prompt)}</pre>
+                    <h2 class="sect">Response</h2>
+                    <pre>${escapeHtml(t.llm_response || '(none)')}</pre>`);
+            });
+        });
+    } catch (e) {
+        host.innerHTML = `<p class="empty">Could not load model calls: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
 // ---------------------------------------------------------------- helpers
 
 function setCount(tab, n) {
@@ -240,15 +311,18 @@ export async function updateTabCounts() {
     if (!missionId) {
         setCount('findings', 0);
         setCount('tools', 0);
+        setCount('llm', 0);
         return;
     }
     try {
-        const [artifacts, tools] = await Promise.all([
+        const [artifacts, tools, traces] = await Promise.all([
             fetch(`${BACKEND_URL}/api/missions/${missionId}/artifacts`).then(r => r.json()),
             fetch(`${BACKEND_URL}/api/missions/${missionId}/tools`).then(r => r.json()),
+            fetch(`${BACKEND_URL}/api/missions/${missionId}/llm`).then(r => r.json()),
         ]);
         setCount('findings', (artifacts.findings || []).length);
         setCount('tools', (tools || []).length);
+        setCount('llm', (traces || []).length);
     } catch { /* counts are cosmetic */ }
 }
 

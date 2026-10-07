@@ -4,7 +4,7 @@ from config.safety import truncate_context, SAFETY_LIMITS
 from config.config import Config
 
 class SecurityAgent:
-    def __init__(self, on_progress=None):
+    def __init__(self, on_progress=None, recorder=None):
         # The agent starts with no memory or plan.
         # These are injected by the Orchestrator at runtime.
         self.memory = None
@@ -14,6 +14,8 @@ class SecurityAgent:
         self.model = LocalModel(
             Config.LLM_MODEL,
             on_progress=on_progress,
+            recorder=recorder,
+            agent_name="SecurityAgent",
             system_instruction="""You are an Elite Web Security Automation Agent.
             
             YOUR MISSION:
