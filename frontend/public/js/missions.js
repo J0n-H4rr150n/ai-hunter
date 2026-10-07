@@ -259,12 +259,11 @@ export async function selectMission(missionId) {
         let lastLogId = 0;
         events.forEach(event => {
             if (event._log_id) lastLogId = Math.max(lastLogId, event._log_id);
-            addToFeed({
-                message: event.message,
-                timestamp: event.timestamp,
-                type: event.type,
-                screenshot: event.screenshot || null
-            });
+            // Pass the whole event, not a hand-picked subset: dropping the other
+            // fields is what made iteration_completed render as a bare type name
+            // with the summary it was carrying nowhere in sight, and left the
+            // entry with nothing to expand into.
+            addToFeed(event);
         });
 
         if (!events.length) {

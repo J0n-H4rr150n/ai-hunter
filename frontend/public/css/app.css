@@ -536,3 +536,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .pill { white-space: normal; }
 
 .item strong, .item .mono { overflow-wrap: anywhere; }
+
+/* Marks a feed line that carries more than its message. */
+.feed-more { float: right; margin-top: .25rem; opacity: .7; }
+.item.clickable:hover .feed-more { opacity: 1; }

@@ -968,7 +968,10 @@ class AutonomousLoop:
             """
             
             summary = planner.complete(prompt)
-            self.log_to_ui("[Auto] ✅ Summary generated")
+            # Log the summary itself, not just that one happened. "Summary
+            # generated" with the summary thrown away is a line that tells the
+            # reader nothing and cannot be expanded into anything.
+            self.log_to_ui(f"[Auto] ✅ Iteration summary\n\n{summary}")
             return summary
             
         except Exception as e:
