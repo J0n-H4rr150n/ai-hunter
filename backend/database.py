@@ -24,10 +24,17 @@ class Database:
             # callers that reasonably expect dicts and lists got strings instead.
             # A non-empty JSON string is truthy, which silently inverted boolean
             # settings such as hitl_enabled.
+            #
+            # Most call sites here already json.dumps() their value before binding
+            # it, so the encoder must pass pre-serialized text straight through or
+            # it would encode a second time and store a JSON string containing JSON.
+            def _encode(value):
+                return value if isinstance(value, str) else json.dumps(value)
+
             for pg_type in ("json", "jsonb"):
                 await conn.set_type_codec(
                     pg_type,
-                    encoder=json.dumps,
+                    encoder=_encode,
                     decoder=json.loads,
                     schema="pg_catalog",
                 )
