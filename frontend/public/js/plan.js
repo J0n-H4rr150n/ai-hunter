@@ -1,5 +1,6 @@
-import { BACKEND_URL, state, logToBackend } from './config.js';
+import { BACKEND_URL, state, logToBackend, fmtTime } from './config.js';
 import { addToFeed } from './feed.js';
+import { renderMarkdown } from './md.js';
 
 export function switchSidebarTab(tabName) {
     // Update tab buttons
@@ -37,7 +38,7 @@ export function addIdea(idea) {
             <div class="flex-1">
                 <p class="text-xs text-gray-300">${idea.suggestion || idea.text || idea}</p>
                 ${idea.rationale ? `<p class="text-xs text-gray-500 mt-1">${idea.rationale}</p>` : ''}
-                <p class="text-xs text-gray-500 mt-1">${new Date().toLocaleTimeString()}</p>
+                <p class="text-xs text-gray-500 mt-1">${fmtTime()}</p>
             </div>
         </div>
     `;
@@ -70,26 +71,15 @@ export function displayIterationPlan(iterationNum, plan) {
         <div class="p-3 border-t border-gray-600 space-y-3">
             ${plan.rationale ? `
                 <div>
-                    <p class="text-xs font-semibold text-gray-400 mb-1">💭 Goal:</p>
-                    <p class="text-xs text-gray-300">${plan.rationale}</p>
+                    <h2 class="sect">Rationale</h2>
+                    <div class="md">${renderMarkdown(plan.rationale)}</div>
                 </div>
             ` : ''}
             
-            ${plan.steps && plan.steps.length > 0 ? `
+            ${plan.steps ? `
                 <div>
-                    <p class="text-xs font-semibold text-gray-400 mb-2">📝 Steps (${plan.steps.length}):</p>
-                    <ol class="space-y-1 text-xs text-gray-300">
-                        ${plan.steps.map((step, idx) => {
-        const stepText = typeof step === 'object'
-            ? `${step.action || ''}${step.target ? ': ' + step.target : ''}`
-            : step;
-        return `
-                                <li class="pl-4 border-l-2 border-gray-600 hover:border-blue-500 transition">
-                                    <span class="text-gray-500">${idx + 1}.</span> ${stepText}
-                                </li>
-                            `;
-    }).join('')}
-                    </ol>
+                    <h2 class="sect">Steps (${stepCount(plan.steps)})</h2>
+                    <div class="md">${renderSteps(plan.steps)}</div>
                 </div>
             ` : ''}
             
@@ -136,32 +126,70 @@ export function updateIterationStatus(iterationNum, status) {
     }
 }
 
-export function togglePlanSidebar() {
+// Single place that puts the sidebar into a given state, so the class, the stored
+// preference and the toggle's accessible labels can never drift apart.
+function applySidebarState(collapsed) {
     const sidebar = document.getElementById('plan-sidebar');
-    const isCollapsed = sidebar.classList.contains('collapsed');
+    const toggle = document.getElementById('sidebar-toggle');
+    if (!sidebar) return;
 
-    if (isCollapsed) {
-        // Expand sidebar
-        sidebar.classList.remove('collapsed');
-        state.sidebarCollapsed = false;
-    } else {
-        // Collapse sidebar
-        sidebar.classList.add('collapsed');
-        state.sidebarCollapsed = true;
+    sidebar.classList.toggle('collapsed', collapsed);
+    state.sidebarCollapsed = collapsed;
+
+    if (toggle) {
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+        const label = collapsed ? 'Expand panel' : 'Collapse panel';
+        toggle.setAttribute('aria-label', label);
+        toggle.setAttribute('title', `${label} (])`);
     }
 
-    // Persist state to localStorage
-    localStorage.setItem('sidebarCollapsed', state.sidebarCollapsed);
+    localStorage.setItem('sidebarCollapsed', collapsed);
+}
+
+
+/**
+ * Render a plan's steps.
+ *
+ * The planner returns `steps` as a single Markdown string of numbered lines, but
+ * this was being treated as an array — `.map()` on a string throws, which is why
+ * the Plan panel came up empty whenever a real plan arrived. Accept both shapes.
+ */
+export function renderSteps(steps) {
+    if (!steps) return '';
+    if (Array.isArray(steps)) {
+        const lines = steps.map(step => typeof step === 'object'
+            ? `${step.action || ''}${step.target ? ': ' + step.target : ''}${step.description ? ' — ' + step.description : ''}`
+            : String(step));
+        return renderMarkdown(lines.map(l => `- ${l}`).join('\n'));
+    }
+    return renderMarkdown(String(steps));
+}
+
+export function stepCount(steps) {
+    if (!steps) return 0;
+    if (Array.isArray(steps)) return steps.length;
+    return String(steps).split('\n').filter(l => /^\s*(\d+[.)]|[-*+])\s+/.test(l)).length;
+}
+
+export function togglePlanSidebar() {
+    const sidebar = document.getElementById('plan-sidebar');
+    if (!sidebar) return;
+    applySidebarState(!sidebar.classList.contains('collapsed'));
 }
 
 // Restore sidebar state on page load
 export function restoreSidebarState() {
-    const wasCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
-    if (wasCollapsed) {
-        const sidebar = document.getElementById('plan-sidebar');
-        sidebar.classList.add('collapsed');
-        state.sidebarCollapsed = true;
-    }
+    applySidebarState(localStorage.getItem('sidebarCollapsed') === 'true');
+
+    // "]" toggles the panel, ignored while typing into a field.
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== ']' || e.metaKey || e.ctrlKey || e.altKey) return;
+        const el = document.activeElement;
+        const tag = el && el.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el && el.isContentEditable)) return;
+        e.preventDefault();
+        togglePlanSidebar();
+    });
 }
 
 export function updatePlanSidebar(plan, status) {
@@ -187,7 +215,7 @@ export function updatePlanSidebar(plan, status) {
         <div class="mb-4 pb-4 border-b border-gray-700">
             <div class="flex items-center justify-between mb-2">
                 <span class="text-xs font-semibold ${statusColor}">${statusIcon} ${statusText}</span>
-                <span class="text-xs text-gray-500">${new Date().toLocaleTimeString()}</span>
+                <span class="text-xs text-gray-500">${fmtTime()}</span>
             </div>
         </div>
     `;
@@ -201,30 +229,11 @@ export function updatePlanSidebar(plan, status) {
         `;
     }
 
-    if (plan.steps && plan.steps.length > 0) {
+    if (plan.steps) {
         html += `<div class="mb-4">
-                <p class="text-xs font-semibold text-gray-400 mb-2">📝 Steps:</p>
-                <ol class="space-y-2">`;
-
-        plan.steps.forEach((step, index) => {
-            let stepText = '';
-            if (typeof step === 'object') {
-                const action = step.action || '';
-                const target = step.target || step.element || '';
-                const description = step.description || step.summary || '';
-                stepText = `${action}${target ? ': ' + target : ''}${description ? ' - ' + description : ''}`;
-            } else {
-                stepText = step;
-            }
-
-            html += `
-                <li class="text-xs text-gray-300 pl-4 border-l-2 border-gray-600 hover:border-blue-500 transition">
-                    <span class="text-gray-500">${index + 1}.</span> ${stepText}
-                </li>
-            `;
-        });
-
-        html += `</ol></div>`;
+                <h2 class="sect">Steps (${stepCount(plan.steps)})</h2>
+                <div class="md">${renderSteps(plan.steps)}</div>
+            </div>`;
     }
 
     if (plan.budgets) {
@@ -295,22 +304,10 @@ export function updateIterationsSidebar(iterations, currentIterationNum) {
                         </div>
                     ` : ''}
                     
-                    ${iteration.plan?.steps && iteration.plan.steps.length > 0 ? `
+                    ${iteration.plan?.steps ? `
                         <div>
-                            <p class="text-xs font-semibold text-gray-400 mb-2">📝 Steps (${iteration.plan.steps.length}):</p>
-                            <ol class="space-y-1 text-xs text-gray-300">
-                                ${iteration.plan.steps.slice(0, 5).map((step, idx) => {
-            const stepText = typeof step === 'object'
-                ? `${step.action || ''}${step.target ? ': ' + step.target : ''}`
-                : step;
-            return `<li class="pl-4 border-l-2 border-gray-600">
-                                        <span class="text-gray-500">${idx + 1}.</span> ${stepText}
-                                    </li>`;
-        }).join('')}
-                                ${iteration.plan.steps.length > 5 ? `
-                                    <li class="text-gray-500 text-xs pl-4">... and ${iteration.plan.steps.length - 5} more steps</li>
-                                ` : ''}
-                            </oli>
+                            <h2 class="sect">Steps (${stepCount(iteration.plan.steps)})</h2>
+                            <div class="md">${renderSteps(iteration.plan.steps)}</div>
                         </div>
                     ` : ''}
                     
@@ -381,18 +378,8 @@ export function showPlanApproval(plan, missionId) {
         
         ${plan.steps ? `
         <div class="mb-3">
-            <p class="text-sm font-semibold text-gray-300 mb-1">📝 Steps:</p>
-            <ol class="text-sm text-gray-400 list-decimal list-inside space-y-1">
-                ${plan.steps.map(step => {
-        if (typeof step === 'object') {
-            const action = step.action || '';
-            const target = step.target || step.element || '';
-            const description = step.description || step.summary || '';
-            return `<li class="ml-2">${action}${target ? ': ' + target : ''}${description ? ' - ' + description : ''}</li>`;
-        }
-        return `<li class="ml-2">${step}</li>`;
-    }).join('')}
-            </ol>
+            <h2 class="sect">Steps (${stepCount(plan.steps)})</h2>
+            <div class="md">${renderSteps(plan.steps)}</div>
         </div>
         ` : ''}
         

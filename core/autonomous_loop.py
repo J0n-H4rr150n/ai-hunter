@@ -1,3 +1,4 @@
+import logging
 import time
 import asyncio
 from core.planner import Planner
@@ -7,10 +8,69 @@ from agents.planner import TacticalPlanner
 from tools.tech_scanner import TechScanner
 from tools.fuzzer import Fuzzer
 from tools.som_browser import SoMBrowser
+from core.browser_thread import ThreadedBrowser
+from core.mission_control import MissionControl, MissionStopped, MissionAborted
+from core.tool_recorder import ToolRecorder, NULL_RECORDER
+from core.llm_recorder import LLMRecorder, NULL_LLM_RECORDER
 from memory.finding_repository import FindingRepository
 from core.agent_tracker import AgentTracker
+from config.config import Config
+from config.safety import SAFETY_LIMITS
 from core.quota_manager import QuotaManager
 from core.playbook_executor import PlaybookExecutor, PlaybookExecutionError
+
+logger = logging.getLogger(__name__)
+
+
+# Map the verbs the planner writes onto the task types run_loop understands.
+_STEP_ACTION_HINTS = (
+    (("fuzz", "intruder", "inject", "payload", "brute", "enumerat"), "fuzz"),
+    (("scan", "navigate", "browse", "inspect", "view", "check", "recon", "crawl",
+      "discover", "dismiss", "login", "search"), "scan"),
+)
+
+
+def parse_plan_steps(steps) -> list:
+    """
+    Normalise a plan's steps into task dicts.
+
+    The planner returns `steps` as a single string of numbered lines. Iterating it
+    directly yields *characters*, so every character became its own task - a plan
+    of 600 characters produced 600 one-letter "analyze" tasks and the mission span
+    forever without doing anything. Accept either a string or a list.
+    """
+    if not steps:
+        return []
+
+    if isinstance(steps, str):
+        import re
+        lines = [ln.strip() for ln in steps.splitlines()]
+        # Drop the list marker; keep the instruction.
+        cleaned = [re.sub(r"^\s*(?:\d+[.)]|[-*+])\s*", "", ln) for ln in lines if ln.strip()]
+        steps = [ln for ln in cleaned if ln]
+
+    tasks = []
+    for step in steps:
+        if isinstance(step, dict):
+            tasks.append({
+                "type": step.get("action", "analyze"),
+                "target": step.get("target"),
+                "description": step.get("description") or str(step),
+            })
+            continue
+
+        text = str(step).strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        task_type = "analyze"
+        for keywords, mapped in _STEP_ACTION_HINTS:
+            if any(k in lowered for k in keywords):
+                task_type = mapped
+                break
+        tasks.append({"type": task_type, "target": None, "description": text})
+    return tasks
+
 
 class AutonomousLoop:
     """
@@ -31,10 +91,22 @@ class AutonomousLoop:
         
         # Browser (will be initialized per mission)
         self.browser = None
+
+        # Pause/stop signalling. The backend flips these; every checkpoint below
+        # observes them, so a stop cannot be swallowed by a long-running phase.
+        self.control = MissionControl()
         
         # UI integration
         self.mission_id = None
         self.ui_callback = None
+        # Durable event bus, injected by the backend. Events are persisted before
+        # they are broadcast, so they survive with no UI connected.
+        self.events = None
+        # Writes every tool call to tool_executions. Replaced by the backend with a
+        # bound recorder; the null one keeps call sites unconditional.
+        self.tool_recorder = NULL_RECORDER
+        # Writes every model call to llm_traces.
+        self.llm_recorder = NULL_LLM_RECORDER
         self.web_approval_callback = None  # For plan approval
         self.tool_approval_callback = None  # For HITL tool approval
         self.hitl_enabled = False  # HITL flag
@@ -107,6 +179,12 @@ class AutonomousLoop:
         
         return approval_response
 
+    def _llm_progress(self, label: str):
+        """Report that a long generation is still running, to the feed."""
+        def report(elapsed: float, tokens: int):
+            self.log_to_ui(f"[LLM] ⏳ {label}: {int(elapsed)}s elapsed, {tokens} tokens so far...")
+        return report
+
     async def start_mission(self, goal: str, target_url: str, instructions: str = None):
         """Bootstraps the mission and starts the loop with LLM-generated plan and human approval."""
         
@@ -123,41 +201,65 @@ class AutonomousLoop:
         # 2. Initialize browser (headless mode for Docker)
         self.log_to_ui("[Auto] 🌐 Launching browser...")
         loop = asyncio.get_event_loop()
-        self.browser = await loop.run_in_executor(None, lambda: SoMBrowser(headless=True))
+        self.browser = await loop.run_in_executor(
+            None, lambda: ThreadedBrowser(lambda: SoMBrowser(headless=True))
+        )
         self.tracker.set_browser(self.browser)
         
-        # 3. Generate Plan using Gemini
-        self.log_to_ui("[Auto] 🧠 Generating execution plan with Gemini 2.5 Pro...")
+        # 3. Generate Plan using the local model
+        self.log_to_ui(f"[Auto] 🧠 Generating execution plan with {Config.LLM_MODEL}...")
         try:
-            # Quick tech scan first
-            tech_report = self._quick_tech_scan(target_url)
-            
-            # Navigate to get visual context
-            self.browser.navigate(target_url)
-            triad = self.browser.get_snapshot_triad()
-            
-            # Generate plan with LLM
-            tactical_planner = TacticalPlanner()
-            self.log_to_ui("[Planner] Synthesizing Tech Stack & Visuals into Plan...")
-            plan = tactical_planner.generate_plan(goal, triad, tech_report)
+            # Scanning, navigating and the planning call are all blocking, and the
+            # model call alone can run for tens of seconds. Keep them off the event
+            # loop so /stop, /pause and the rest of the API stay responsive while the
+            # plan is being produced.
+            def _build_plan():
+                tech_report = self._quick_tech_scan(target_url)
+
+                # Navigate to get visual context
+                self.browser.navigate(target_url)
+                triad = self.browser.get_snapshot_triad()
+
+                # Generate plan with LLM
+                tactical_planner = TacticalPlanner(
+                    on_progress=self._llm_progress("planning"),
+                    recorder=self.llm_recorder,
+                )
+                self.log_to_ui("[Planner] Synthesizing Tech Stack & Visuals into Plan...")
+                return tactical_planner.generate_plan(goal, triad, tech_report)
+
+            plan = await loop.run_in_executor(None, _build_plan)
+            self.control.raise_if_stopped()
             workflow.set_plan(plan)
-            
+
+        except MissionStopped:
+            self.log_to_ui("[Auto] ⏹️ Mission stopped during planning.")
+            if self.browser:
+                self.browser = None
+            self.tracker.set_browser(None)
+            raise
         except Exception as e:
-            self.log_to_ui(f"[Auto] ❌ Plan generation failed: {e}")
+            logger.error("plan generation failed for mission %s", self.mission_id, exc_info=True)
+            self.log_to_ui(f"[Auto] ❌ Plan generation failed: {type(e).__name__}: {e}")
             self.log_to_ui("[Auto] 🛑 Aborting mission")
             if self.browser:
                 self.browser.close()
                 self.browser = None
             self.tracker.set_browser(None)
-            return
+            raise MissionAborted(f"plan generation failed: {type(e).__name__}: {e}") from e
         
         # 4. INTERRUPT: Human Approval Gate
         self.log_to_ui("\n[Auto] ⏸️  PAUSING for human approval...")
         
         # Check if we have a web approval callback (injected by backend)
         if hasattr(self, 'web_approval_callback') and self.web_approval_callback:
-            # The callback should be a synchronous wrapper that handles the async call
-            approved, edited_plan = self.web_approval_callback(plan)
+            # The backend's wrapper blocks on run_coroutine_threadsafe(...).result().
+            # Calling it inline would park the event loop waiting on a coroutine that
+            # only that same loop can run — a permanent deadlock. Run it on a worker
+            # thread so the loop stays free to service the approval request.
+            approved, edited_plan = await loop.run_in_executor(
+                None, self.web_approval_callback, plan
+            )
         else:
             # Fall back to terminal-based approval
             interface = HumanInterface(self.tracker)
@@ -170,7 +272,7 @@ class AutonomousLoop:
                 self.browser.close()
                 self.browser = None
             self.tracker.set_browser(None)
-            return
+            raise MissionAborted("plan rejected by operator")
         
         # 5. Apply approved/edited plan and create Iteration 1
         workflow.approve(edited_plan)
@@ -203,9 +305,11 @@ class AutonomousLoop:
                 await self.run_iteration(iteration_id, edited_plan)
             else:
                 # Fallback to old behavior if no DB
-                self.run_loop()
+                await asyncio.get_event_loop().run_in_executor(None, self.run_loop)
             
             workflow.complete()
+        except MissionStopped:
+            self.log_to_ui("[Auto] ⏹️ Mission stopped by user.")
         finally:
             # 7. Always cleanup browser
             self.log_to_ui("[Auto] 🛑 Closing browser...")
@@ -240,7 +344,9 @@ class AutonomousLoop:
         # Initialize browser (headless mode for Docker)
         self.log_to_ui("[Playbook] 🌐 Launching browser...")
         loop = asyncio.get_event_loop()
-        self.browser = await loop.run_in_executor(None, lambda: SoMBrowser(headless=True))
+        self.browser = await loop.run_in_executor(
+            None, lambda: ThreadedBrowser(lambda: SoMBrowser(headless=True))
+        )
         self.tracker.set_browser(self.browser)
         
         # Initialize playbook executor
@@ -284,7 +390,8 @@ class AutonomousLoop:
         """Quick tech scan without full fingerprinting"""
         import requests
         try:
-            resp = requests.get(url, timeout=5)
+            resp = requests.get(url, timeout=SAFETY_LIMITS.get('FUZZER_TIMEOUT', 15),
+                                verify=Config.requests_verify())
             return {
                 "server": resp.headers.get("Server", "Unknown"),
                 "framework": [],
@@ -308,6 +415,12 @@ class AutonomousLoop:
         self.log_to_ui("[Auto] Entering execution loop...")
         
         while True:
+            # Honour pause/stop before committing to another task.
+            self.control.checkpoint(
+                on_pause=lambda: self.log_to_ui("[Auto] ⏸️ Paused — waiting for resume..."),
+                on_resume=lambda: self.log_to_ui("[Auto] ▶️ Resumed."),
+            )
+
             # 1. Get Next Task
             task = self.planner.get_next_task()
             
@@ -365,7 +478,9 @@ class AutonomousLoop:
         self.log_to_ui(f"[Scanner] Analyzing technology stack for: {url}")
         
         # HTTP-based tech fingerprinting
-        tech_results = self.scanner.scan_url(url)
+        with self.tool_recorder.record("tech_scan", {"url": url}) as call:
+            tech_results = self.scanner.scan_url(url)
+            call.result = tech_results
         
         # Show detailed tech stack results
         if tech_results:
@@ -379,12 +494,23 @@ class AutonomousLoop:
         
         # Browser-based visual reconnaissance
         if self.browser:
+            self.control.checkpoint()
             self.log_to_ui(f"[Auto] 🌐 Opening {url} in browser for visual analysis...")
-            self.browser.navigate(url)
-            
+            with self.tool_recorder.record("navigate", {"url": url}) as call:
+                self.browser.navigate(url)
+                call.result = {"url": url}
+
             # Capture visual snapshot with Set-of-Marks
             self.log_to_ui("[Auto] 📸 Capturing page snapshot with interactive elements...")
-            snapshot = self.browser.get_snapshot_triad()
+            with self.tool_recorder.record("snapshot_triad", {"url": url}) as call:
+                snapshot = self.browser.get_snapshot_triad()
+                call.result = {
+                    "url": snapshot.get("url"),
+                    "element_count": len(snapshot.get("elements", [])),
+                    "dom": snapshot.get("dom"),
+                    "raw_source": snapshot.get("raw_source"),
+                    "network": snapshot.get("network"),
+                }
             
             # Always capture screenshot regardless
             shadow_result = self.tracker.capture_shadow("scan_complete", {
@@ -446,7 +572,8 @@ class AutonomousLoop:
             self.log_to_ui(f"[Auto] 📋 Applying user guidance: {instructions[:80]}...")
         
         # Try traditional URL parameter fuzzing first
-        self.fuzzer.fuzz_url_params(url)
+        with self.tool_recorder.record("fuzz_url_params", {"url": url}) as call:
+            call.result = self.fuzzer.fuzz_url_params(url)
         
         # If we have a browser, also fuzz discovered input fields
         if self.browser:
@@ -493,6 +620,7 @@ class AutonomousLoop:
                         test_payloads = ["<script>alert(1)</script>", "' OR '1'='1", "../../etc/passwd"]
                     
                     for payload in test_payloads:
+                        self.control.checkpoint()
                         if not self.quota.check_limit("actions"):
                             break
                         
@@ -515,7 +643,10 @@ class AutonomousLoop:
                             self.browser.clear_network_logs()
                             
                             # Type the actual (possibly edited) payload
-                            self.browser.interact("type", elem_id, actual_payload)
+                            with self.tool_recorder.record(
+                                "type", {"element_id": elem_id, "payload": actual_payload, "url": url}
+                            ) as call:
+                                call.result = self.browser.interact("type", elem_id, actual_payload)
                             self.quota.tally("actions", 1)
                             
                             # Try to submit the form
@@ -524,7 +655,10 @@ class AutonomousLoop:
                             
                             if submit_btn_id:
                                 self.log_to_ui(f"[Auto] 📤 Submitting form with payload...")
-                                self.browser.interact("click", submit_btn_id)
+                                with self.tool_recorder.record(
+                                    "click", {"element_id": submit_btn_id, "url": url}
+                                ) as call:
+                                    call.result = self.browser.interact("click", submit_btn_id)
                                 self.quota.tally("actions", 1)
                                 
                                 # Wait for network response
@@ -614,7 +748,11 @@ class AutonomousLoop:
         try:
             page_content = page.content()
             visible_text = page.inner_text('body')
-        except:
+        except Exception as e:
+            # Fuzz analysis runs against empty strings if this fails, so the result
+            # would look like a clean response rather than an unobserved one.
+            logger.warning("could not read page for fuzz analysis: %s", e, exc_info=True)
+            analysis["analysis_error"] = f"{type(e).__name__}: {e}"
             page_content = ""
             visible_text = ""
         
@@ -640,7 +778,7 @@ class AutonomousLoop:
                 try:
                     idx = combined_text.index(pattern.lower())
                     analysis["error_message"] = combined_text[max(0, idx-50):idx+200]
-                except:
+                except ValueError:
                     analysis["error_message"] = f"Pattern '{pattern}' detected"
                 break
         
@@ -745,23 +883,20 @@ class AutonomousLoop:
         
         # Set up planner with iteration plan steps
         if plan.get('steps'):
-            self.log_to_ui(f"[Auto] 📝 Loaded {len(plan['steps'])} steps from iteration plan")
+            self.log_to_ui(f"[Auto] 📝 Loaded {len(parse_plan_steps(plan['steps']))} steps from iteration plan")
             # Convert plan steps to planner tasks
-            for step in plan['steps']:
-                if isinstance(step, dict):
-                    task_type = step.get('action', 'analyze')
-                    target = step.get('target', self.planner.get_mission().get('target_url'))
-                    description = step.get('description', str(step))
-                else:
-                    # Simple string step
-                    task_type = 'analyze'
-                    target = self.planner.get_mission().get('target_url')
-                    description = str(step)
-                
-                self.planner.add_task(task_type, target, description)
+            default_target = self.planner.get_mission().get('target_url')
+            for task in parse_plan_steps(plan['steps']):
+                self.planner.add_task(
+                    task['type'],
+                    task['target'] or default_target,
+                    task['description'],
+                )
         
-        # Execute the iteration using the existing run_loop
-        self.run_loop()
+        # Execute the iteration using the existing run_loop.
+        # Off the event loop: run_loop blocks, and the API (including /stop) plus the
+        # HITL approval round-trip both need the loop to stay responsive.
+        await asyncio.get_event_loop().run_in_executor(None, self.run_loop)
         
         # Iteration complete - generate summary
         self.log_to_ui("\n[Auto] ✅ Iteration execution complete, generating summary...")
@@ -773,26 +908,17 @@ class AutonomousLoop:
             self.log_to_ui("[Auto] ✅ Iteration marked as completed")
         
         # Publish iteration_completed event for UI
-        if hasattr(self, 'mission_id'):
-            import asyncio
-            from backend.redis_manager import RedisManager
-            redis_mgr = RedisManager()
-            await redis_mgr.connect()
-            
-            # Get current iteration number
+        if self.mission_id and self.events:
             iteration = await self.db.get_iteration(iteration_id)
-            iteration_num = iteration.get('iteration_number', 1)
-            
-            await redis_mgr.publish_event("missions:all", {
+            iteration_num = (iteration or {}).get('iteration_number', 1)
+
+            await self.events.publish_event("missions:all", {
                 "type": "iteration_completed",
                 "mission_id": self.mission_id,
                 "iteration_number": iteration_num,
                 "iteration_id": iteration_id,
                 "summary": summary,
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             })
-            
-            await redis_mgr.disconnect()
         
         return summary
     
@@ -825,7 +951,7 @@ class AutonomousLoop:
         # Use TacticalPlanner to generate summary
         try:
             from agents.planner import TacticalPlanner
-            planner = TacticalPlanner()
+            planner = TacticalPlanner(recorder=self.llm_recorder)
             
             prompt = f"""
             Summarize the findings from this security testing iteration:
@@ -841,8 +967,11 @@ class AutonomousLoop:
             Keep it under 300 words.
             """
             
-            summary = planner._call_llm(prompt)
-            self.log_to_ui("[Auto] ✅ Summary generated")
+            summary = planner.complete(prompt)
+            # Log the summary itself, not just that one happened. "Summary
+            # generated" with the summary thrown away is a line that tells the
+            # reader nothing and cannot be expanded into anything.
+            self.log_to_ui(f"[Auto] ✅ Iteration summary\n\n{summary}")
             return summary
             
         except Exception as e:
@@ -868,15 +997,18 @@ class AutonomousLoop:
         # Generate new plan with LLM
         try:
             from agents.planner import TacticalPlanner
-            planner = TacticalPlanner()
+            planner = TacticalPlanner(
+                on_progress=self._llm_progress("replanning"),
+                recorder=self.llm_recorder,
+            )
             
             # Get current page snapshot if browser is available
             triad = None
             if self.browser:
                 try:
                     triad = self.browser.get_snapshot_triad()
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning("snapshot unavailable for replanning: %s", e, exc_info=True)
             
             prompt = f"""
             Mission: Security testing of {target_url}
@@ -897,11 +1029,12 @@ class AutonomousLoop:
             Generate a tactical plan with specific steps.
             """
             
+            # generate_plan has no `context` parameter; the accumulated history
+            # belongs in the goal, which is what the planner actually reads.
             new_plan = planner.generate_plan(
-                goal=f"Iteration {current_iteration_num + 1}: Continue security testing",
-                triad=triad,
-                tech_report={},
-                context=prompt
+                goal=prompt,
+                triad=triad or {},
+                tech_report={}
             )
             
             # Create new iteration in database

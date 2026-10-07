@@ -1,4 +1,4 @@
-import { BACKEND_URL, state } from './config.js';
+import { BACKEND_URL, state, apiPost } from './config.js';
 import { addToFeed } from './feed.js';
 
 // Initialize mission control buttons and chat
@@ -15,19 +15,21 @@ export function initMissionControl() {
         if (!state.currentMissionId) return;
 
         try {
-            await fetch(`${BACKEND_URL}/api/missions/${state.currentMissionId}/pause`, {
-                method: 'POST'
-            });
+            await apiPost(`/api/missions/${state.currentMissionId}/pause`);
 
             pauseBtn.disabled = true;
             if (statusText) statusText.textContent = 'Pausing...';
 
             addToFeed({
-                message: '⏸️ Pause requested - agent will pause after current task completes',
+                message: '⏸️ Mission paused',
                 timestamp: new Date().toISOString()
             });
         } catch (error) {
             console.error('Failed to pause mission:', error);
+            addToFeed({
+                message: `❌ Could not pause: ${error.message}`,
+                timestamp: new Date().toISOString(), type: 'error'
+            });
         }
     });
 
@@ -36,9 +38,7 @@ export function initMissionControl() {
         if (!state.currentMissionId) return;
 
         try {
-            await fetch(`${BACKEND_URL}/api/missions/${state.currentMissionId}/resume`, {
-                method: 'POST'
-            });
+            await apiPost(`/api/missions/${state.currentMissionId}/resume`);
 
             resumeBtn.classList.add('hidden');
             pauseBtn.classList.remove('hidden');
@@ -50,6 +50,10 @@ export function initMissionControl() {
             });
         } catch (error) {
             console.error('Failed to resume mission:', error);
+            addToFeed({
+                message: `❌ Could not resume: ${error.message}`,
+                timestamp: new Date().toISOString(), type: 'error'
+            });
         }
     });
 
@@ -62,9 +66,7 @@ export function initMissionControl() {
         }
 
         try {
-            await fetch(`${BACKEND_URL}/api/missions/${state.currentMissionId}/stop`, {
-                method: 'POST'
-            });
+            await apiPost(`/api/missions/${state.currentMissionId}/stop`);
 
             disableControls();
             if (statusText) statusText.textContent = 'Stopped';
@@ -77,6 +79,10 @@ export function initMissionControl() {
             state.currentMissionId = null;
         } catch (error) {
             console.error('Failed to stop mission:', error);
+            addToFeed({
+                message: `❌ Could not stop: ${error.message}`,
+                timestamp: new Date().toISOString(), type: 'error'
+            });
         }
     });
 

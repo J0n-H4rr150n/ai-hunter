@@ -1,21 +1,21 @@
 import json
-import vertexai
-from vertexai.generative_models import GenerativeModel, Part, SafetySetting
+from core.llm_client import LocalModel, Part
 from config.safety import truncate_context, SAFETY_LIMITS
 from config.config import Config
 
-class VertexAgent:
-    def __init__(self):
-        vertexai.init(project=Config.GCP_PROJECT_ID, location=Config.GCP_LOCATION)
-        
-        # The agent starts with no memory or plan. 
+class SecurityAgent:
+    def __init__(self, on_progress=None, recorder=None):
+        # The agent starts with no memory or plan.
         # These are injected by the Orchestrator at runtime.
-        self.memory = None 
+        self.memory = None
         self.current_mission_plan = "No specific plan loaded. Explore safely."
         self.runbook_context = None  # Injected when executing via runbooks
-        
-        self.model = GenerativeModel(
-            "gemini-2.5-pro",
+
+        self.model = LocalModel(
+            Config.LLM_MODEL,
+            on_progress=on_progress,
+            recorder=recorder,
+            agent_name="SecurityAgent",
             system_instruction="""You are an Elite Web Security Automation Agent.
             
             YOUR MISSION:
@@ -54,26 +54,6 @@ class VertexAgent:
             }
             """
         )
-        
-        # Allow security testing content (prevent false positive blocks)
-        self.safety = [
-            SafetySetting(
-                category=SafetySetting.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold=SafetySetting.HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            ),
-            SafetySetting(
-                category=SafetySetting.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                threshold=SafetySetting.HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            ),
-            SafetySetting(
-                category=SafetySetting.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                threshold=SafetySetting.HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            ),
-            SafetySetting(
-                category=SafetySetting.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                threshold=SafetySetting.HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            ),
-        ]
 
     def set_mission_plan(self, plan_text: str):
         """
@@ -120,7 +100,7 @@ class VertexAgent:
         The Core Loop:
         1. Checks Memory (RAG) for past mistakes.
         2. Sanitizes inputs (Safety truncation).
-        3. Generates the next move via Gemini.
+        3. Generates the next move via the local model.
         """
         
         # 1. MEMORY RAG STEP
@@ -143,9 +123,10 @@ class VertexAgent:
             for e in element_list
         ])
         
-        prompt_parts = [
-            f"CURRENT GOAL: {goal}",        ]
-        
+        prompt_parts: list = [
+            f"CURRENT GOAL: {goal}",
+        ]
+
         # Inject runbook context if we're in runbook mode
         if self.runbook_context:
             runbook_info = f"""--- RUNBOOK EXECUTION MODE ---
@@ -176,7 +157,7 @@ IMPORTANT: Your actions should align with the current step's objective while usi
             
             # The Visual Anchor
             Part.from_data(screenshot_bytes, mime_type="image/jpeg")
-        ]
+        ])
 
         if text_context:
             prompt_parts.append(f"--- CONTEXT DATA (Source/Network) ---\n{text_context}\n--- END DATA ---")
@@ -187,8 +168,7 @@ IMPORTANT: Your actions should align with the current step's objective while usi
         try:
             response = self.model.generate_content(
                 prompt_parts,
-                generation_config={"response_mime_type": "application/json"},
-                safety_settings=self.safety
+                generation_config={"response_mime_type": "application/json"}
             )
             return json.loads(response.text)
         except Exception as e:
@@ -251,7 +231,7 @@ IMPORTANT: Your actions should align with the current step's objective while usi
         ])
         
         # Build runbook-specific prompt
-        prompt_parts = [
+        prompt_parts: list = [
             f"=== RUNBOOK-GUIDED EXECUTION ===",
             f"Overall Goal: {goal}",
             f"",
@@ -309,8 +289,7 @@ IMPORTANT: Your actions should align with the current step's objective while usi
         try:
             response = self.model.generate_content(
                 prompt_parts,
-                generation_config={"response_mime_type": "application/json"},
-                safety_settings=self.safety
+                generation_config={"response_mime_type": "application/json"}
             )
             decision = json.loads(response.text)
             

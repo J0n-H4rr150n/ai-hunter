@@ -1,14 +1,33 @@
 import json
-import vertexai
-from vertexai.generative_models import GenerativeModel, Part
+from core.llm_client import LocalModel, Part
 from config.safety import HARD_CAPS
 from config.config import Config
 
 class TacticalPlanner:
-    def __init__(self):
-        vertexai.init(project=Config.GCP_PROJECT_ID, location=Config.GCP_LOCATION)
-        self.model = GenerativeModel("gemini-2.5-pro")
+    def __init__(self, on_progress=None, recorder=None):
+        # on_progress(elapsed_seconds, tokens) is called periodically during long
+        # generations so the UI can show the model is working, not wedged.
+        self.model = LocalModel(
+            Config.LLM_MODEL,
+            on_progress=on_progress,
+            recorder=recorder,
+            agent_name="TacticalPlanner",
+        )
         
+    def complete(self, prompt: str, max_tokens: int = 1024) -> str:
+        """
+        Plain-text completion, for summaries and other non-JSON work.
+
+        The iteration summariser called a `_call_llm` method that never existed, so
+        every summary raised AttributeError and silently fell back to a stub - which
+        then became the input to the next iteration's plan.
+        """
+        response = self.model.generate_content(
+            [prompt],
+            generation_config={"max_output_tokens": max_tokens},
+        )
+        return response.text.strip()
+
     def generate_plan(self, goal: str, triad: dict, tech_report: dict) -> dict:
         """
         Synthesizes Tech Stack + Visuals + Network into a Master Plan.
@@ -35,6 +54,8 @@ class TacticalPlanner:
         FINDINGS: {tech_report.get('findings', [])}
         """
 
+        triad = triad or {}
+
         prompt = [
             f"MISSION GOAL: {goal}",
             f"TARGET URL: {triad.get('url', 'Unknown')}",
@@ -51,8 +72,6 @@ class TacticalPlanner:
             f"   HARD CAPS: {json.dumps(HARD_CAPS)}",
             "   Don't ask for max unless needed. Be efficient.",
             "4. OUTPUT STRICT JSON ONLY.",
-            
-            Part.from_data(triad['screenshot'], mime_type="image/jpeg"),
             
             """JSON SCHEMA:
             {
@@ -71,6 +90,11 @@ class TacticalPlanner:
             """
         ]
         
+        # Replanning between iterations has no live browser, so there may be no
+        # screenshot to anchor on. Only attach one when it exists.
+        if triad.get('screenshot'):
+            prompt.insert(-1, Part.from_data(triad['screenshot'], mime_type="image/jpeg"))
+
         # Print removed - logged by autonomous_loop instead
         try:
             response = self.model.generate_content(

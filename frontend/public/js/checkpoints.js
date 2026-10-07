@@ -1,5 +1,5 @@
 // Checkpoint management for playbook missions
-import { BACKEND_URL, state } from './config.js';
+import { BACKEND_URL, state, fmtDateTime } from './config.js';
 import { addToFeed } from './feed.js';
 
 // Pause playbook execution
@@ -126,7 +126,7 @@ async function loadCheckpoints() {
                         <div>
                             <h4 class="text-sm font-semibold text-blue-300">${checkpoint.key}</h4>
                             <p class="text-xs text-gray-400 mt-1">
-                                ${created.toLocaleString()}
+                                ${fmtDateTime(created)}
                             </p>
                         </div>
                         <button onclick="restoreCheckpoint('${checkpoint.key}')"

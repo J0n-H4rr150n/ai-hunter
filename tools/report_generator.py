@@ -6,7 +6,7 @@ for runbook consumption and end-user delivery.
 """
 
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class ReportGenerator:
@@ -56,7 +56,7 @@ class ReportGenerator:
             f"\n**Mission ID:** {mission_id}",
             f"**Target:** {target}",
             f"**Assessment Date:** {started_at}",
-            f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
             "\n## Overview",
             f"\nThis assessment identified **{total} findings** across the target application.",
             "\n## Findings by Severity",
@@ -132,7 +132,7 @@ class ReportGenerator:
             "# Technical Security Assessment Report",
             f"\n**Mission ID:** {mission_id}",
             f"**Target:** {target}",
-            f"**Report Generated:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            f"**Report Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
             "\n---",
             "\n## Table of Contents",
             "\n1. [Assessment Summary](#assessment-summary)",
@@ -258,7 +258,7 @@ class ReportGenerator:
         lines = [
             "# Vulnerability Assessment Report",
             f"\n**Mission ID:** {mission_id}",
-            f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
             f"\n**Total Vulnerabilities:** {len(vuln_findings)}",
             "\n---",
             "\n## Critical & High Severity Vulnerabilities",
@@ -351,7 +351,7 @@ class ReportGenerator:
         lines = [
             "# Technology Stack Inventory",
             f"\n**Mission ID:** {mission_id}",
-            f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
             f"\n**Technologies Detected:** {len(tech_findings)}",
             "\n---",
             "\n## Detected Technologies",

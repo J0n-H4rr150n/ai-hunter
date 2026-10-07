@@ -6,7 +6,7 @@ import asyncpg
 import os
 import json
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Check if embeddings are disabled
 EMBEDDINGS_ENABLED = os.getenv('DISABLE_EMBEDDINGS', 'true').lower() not in ('1', 'true', 'yes')
@@ -18,7 +18,28 @@ class Database:
     
     async def initialize(self):
         """Create connection pool"""
-        self.pool = await asyncpg.create_pool(self.database_url)
+
+        async def _init_connection(conn):
+            # asyncpg hands back json/jsonb as raw text unless told otherwise, so
+            # callers that reasonably expect dicts and lists got strings instead.
+            # A non-empty JSON string is truthy, which silently inverted boolean
+            # settings such as hitl_enabled.
+            #
+            # Most call sites here already json.dumps() their value before binding
+            # it, so the encoder must pass pre-serialized text straight through or
+            # it would encode a second time and store a JSON string containing JSON.
+            def _encode(value):
+                return value if isinstance(value, str) else json.dumps(value)
+
+            for pg_type in ("json", "jsonb"):
+                await conn.set_type_codec(
+                    pg_type,
+                    encoder=_encode,
+                    decoder=json.loads,
+                    schema="pg_catalog",
+                )
+
+        self.pool = await asyncpg.create_pool(self.database_url, init=_init_connection)
         print("✅ Database connection pool created")
     
     async def close(self):
@@ -38,21 +59,31 @@ class Database:
             return False
     
     # Mission operations
-    async def create_mission(self, target_url: str, instructions: Optional[str] = None) -> int:
+    async def create_mission(self, target_url: str, instructions: Optional[str] = None,
+                             name: Optional[str] = None) -> int:
         """Create a new mission"""
         async with self.pool.acquire() as conn:
             mission_id = await conn.fetchval(
                 """
-                INSERT INTO missions (goal, target_url, instructions, status)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO missions (goal, target_url, instructions, status, name)
+                VALUES ($1, $2, $3, $4, $5)
                 RETURNING id
                 """,
                 f"Audit {target_url}",
                 target_url,
                 instructions,
-                "planning"
+                "planning",
+                (name or "").strip() or None
             )
         return mission_id
+
+    async def rename_mission(self, mission_id: int, name: Optional[str]) -> None:
+        """Set or clear a mission's name."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE missions SET name = $1 WHERE id = $2",
+                (name or "").strip() or None, mission_id
+            )
     
     async def update_mission_status(self, mission_id: int, status: str):
         """Update mission status"""
@@ -303,9 +334,28 @@ class Database:
                 screenshot_path
             )
     
+    @staticmethod
+    def _as_datetime(value):
+        """
+        Coerce an ISO-8601 string to a datetime.
+
+        LLMTrace stores timestamps as ISO strings, but the columns are TIMESTAMPTZ
+        and asyncpg will not accept a string for them.
+        """
+        if value is None or isinstance(value, datetime):
+            return value
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+        # Treat a naive value as UTC rather than letting the server guess.
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
     async def save_llm_trace(self, trace) -> int:
         """Save LLM trace for observability"""
         trace_dict = trace.to_dict()
+        trace_dict['timestamp_start'] = self._as_datetime(trace_dict.get('timestamp_start'))
+        trace_dict['timestamp_end'] = self._as_datetime(trace_dict.get('timestamp_end'))
         
         async with self.pool.acquire() as conn:
             trace_id = await conn.fetchval(
@@ -326,10 +376,10 @@ class Database:
                     raw_request, raw_response, environment
                 )
                 VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                    $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-                    $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38,
-                    $39, $40, $41
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
+                    $23, $24, $25, $26, $27, $28, $29, $30, $31, $32,
+                    $33, $34, $35, $36, $37, $38, $39, $40, $41, $42
                 )
                 RETURNING id
                 """,
@@ -420,7 +470,7 @@ class Database:
                 json.dumps(value) if not isinstance(value, str) else value,
                 new_version,
                 json.dumps(metadata) if metadata else None,
-                datetime.utcnow()
+                datetime.now(timezone.utc)
             )
     
     async def get_state_by_scope(self, scope: str, scope_id: str) -> Dict[str, Any]:
@@ -588,6 +638,91 @@ class Database:
             return "\n".join(summaries) if summaries else "No completed iterations yet."
     
     # Activity log operations
+    # Tool execution recording
+    async def start_tool_execution(
+        self,
+        mission_id: Optional[int],
+        tool_name: str,
+        inputs: dict,
+        started_at: Optional[datetime] = None
+    ) -> int:
+        """
+        Record that a tool call has begun.
+
+        Written on entry rather than on completion so a tool that hangs or crashes
+        the process still leaves a row with status 'running'.
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                """
+                INSERT INTO tool_executions
+                (mission_id, tool_name, inputs, status, started_at)
+                VALUES ($1, $2, $3, 'running', COALESCE($4, CURRENT_TIMESTAMP))
+                RETURNING id
+                """,
+                mission_id, tool_name, json.dumps(inputs, default=str), started_at
+            )
+
+    async def complete_tool_execution(
+        self,
+        execution_id: int,
+        outputs: Optional[dict] = None,
+        status: str = "success",
+        error_message: Optional[str] = None,
+        raw_output_path: Optional[str] = None
+    ) -> None:
+        """Close out a tool call with its response or its error."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE tool_executions
+                SET outputs = $2, status = $3, error_message = $4,
+                    raw_output_path = COALESCE($5, raw_output_path),
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE id = $1
+                """,
+                execution_id,
+                json.dumps(outputs, default=str) if outputs is not None else None,
+                status, error_message, raw_output_path
+            )
+
+    async def get_tool_executions(
+        self, mission_id: int, limit: int = 500
+    ) -> List[Dict[str, Any]]:
+        """Every tool call for a mission, oldest first."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, tool_name, inputs, outputs, status, error_message,
+                       raw_output_path, started_at, completed_at,
+                       EXTRACT(MILLISECONDS FROM (completed_at - started_at))::int AS duration_ms
+                FROM tool_executions
+                WHERE mission_id = $1
+                ORDER BY started_at ASC, id ASC
+                LIMIT $2
+                """,
+                mission_id, limit
+            )
+            return [dict(r) for r in rows]
+
+    async def get_llm_traces(self, mission_id: int, limit: int = 200) -> List[Dict[str, Any]]:
+        """Model calls for a mission, oldest first."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, trace_id, agent_name, llm_model, status, finish_reason,
+                       system_prompt, user_prompt, llm_response,
+                       input_tokens, output_tokens, elapsed_time_ms, tokens_per_second,
+                       error_message, retry_count, timestamp_start, timestamp_end
+                FROM llm_traces
+                WHERE mission_id = $1
+                ORDER BY timestamp_start ASC, id ASC
+                LIMIT $2
+                """,
+                mission_id, limit
+            )
+            return [dict(r) for r in rows]
+
     async def save_activity_log(
         self,
         mission_id: int,
@@ -613,20 +748,27 @@ class Database:
     async def get_mission_activity_logs(
         self, 
         mission_id: int,
-        limit: int = 1000
+        limit: int = 1000,
+        after_id: int = 0
     ) -> List[Dict[str, Any]]:
-        """Get all activity logs for a mission"""
+        """
+        Get activity logs for a mission.
+
+        `after_id` lets a reconnecting client fetch only what it missed. Ordering is
+        by id as well as timestamp, since events published in the same millisecond
+        would otherwise come back in an arbitrary order.
+        """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id, message, message_type, screenshot_path, 
                        metadata, timestamp
                 FROM activity_logs
-                WHERE mission_id = $1
-                ORDER BY timestamp ASC
-                LIMIT $2
+                WHERE mission_id = $1 AND id > $2
+                ORDER BY timestamp ASC, id ASC
+                LIMIT $3
                 """,
-                mission_id, limit
+                mission_id, after_id, limit
             )
             results = []
             for row in rows:

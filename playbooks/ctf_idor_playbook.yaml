@@ -157,7 +157,7 @@ configuration:
     
   # LLM settings for this playbook
   llm_settings:
-    model: "gemini-2.0-flash-exp"
+    model: "qwen38-27b-q8"
     temperature: 0.3  # Lower temp for precise testing
     budget_per_runbook: 50000  # Token budget
   

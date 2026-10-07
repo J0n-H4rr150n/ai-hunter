@@ -1,0 +1,18 @@
+[Unit]
+Description=AI Hunter — autonomous security testing agent (:30170)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/code/ai-hunter
+Environment=PORT=30170
+Environment=LLM_BASE_URL=http://127.0.0.1:30087/v1
+Environment=LLM_MODEL=qwen38-27b-q8
+Environment=DATABASE_URL=postgresql://hunter:hunter_pass_dev@127.0.0.1:33001/ai_hunter
+ExecStart=/usr/bin/python3 %h/code/ai-hunter/serve.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

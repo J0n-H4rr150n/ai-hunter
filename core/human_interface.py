@@ -3,7 +3,7 @@ import os
 import platform
 import subprocess
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from config.config import Config
 
@@ -32,7 +32,7 @@ class HumanInterface:
         Returns:
             str: The human's response.
         """
-        timestamp = datetime.now().strftime("%H-%M-%S-%f")[:-3]
+        timestamp = datetime.now(timezone.utc).strftime("%H-%M-%S-%f")[:-3]
         
         print(f"\n[🤖 Agent]: {question}")
         

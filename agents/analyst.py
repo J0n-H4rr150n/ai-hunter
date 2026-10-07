@@ -1,14 +1,13 @@
 import json
-import vertexai
-from vertexai.generative_models import GenerativeModel, SafetySetting
+from core.llm_client import LocalModel
 from config.config import Config
 
 class FindingsAnalyst:
-    def __init__(self):
-        vertexai.init(project=Config.GCP_PROJECT_ID, location=Config.GCP_LOCATION)
-        
-        self.model = GenerativeModel(
-            "gemini-2.5-pro",
+    def __init__(self, recorder=None):
+        self.model = LocalModel(
+            Config.LLM_MODEL,
+            recorder=recorder,
+            agent_name="FindingsAnalyst",
             system_instruction="""You are a Senior Security Analyst (SOC Tier 3) and CTF Expert.
             
             YOUR JOB:
@@ -39,26 +38,6 @@ class FindingsAnalyst:
             - If the evidence is ambiguous (e.g. a weird hash), verdict is "NEEDS_HUMAN".
             """
         )
-        
-        # High safety thresholds to allow analyzing potentially sensitive looking text
-        self.safety = [
-            SafetySetting(
-                category=SafetySetting.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold=SafetySetting.HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            ),
-            SafetySetting(
-                category=SafetySetting.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                threshold=SafetySetting.HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            ),
-            SafetySetting(
-                category=SafetySetting.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                threshold=SafetySetting.HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            ),
-            SafetySetting(
-                category=SafetySetting.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                threshold=SafetySetting.HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            ),
-        ]
 
     def review_candidate(self, candidate: dict) -> dict:
         """
@@ -91,8 +70,7 @@ class FindingsAnalyst:
         try:
             response = self.model.generate_content(
                 prompt,
-                generation_config={"response_mime_type": "application/json"},
-                safety_settings=self.safety
+                generation_config={"response_mime_type": "application/json"}
             )
             return json.loads(response.text)
         except Exception as e:

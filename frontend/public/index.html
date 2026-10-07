@@ -1,387 +1,263 @@
-<!DOCTYPE html>
-<html lang="en" class="dark">
+<!doctype html>
+<html lang="en">
 
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Hunter - Autonomous Security Agent</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0a0e1a">
+    <title>AI Hunter</title>
 
-    <!-- Tailwind CSS via CDN for now (will compile locally later) -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {}
-            }
-        }
-    </script>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/icon-192.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 
-    <!-- Custom styles -->
-    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="css/app.css">
 </head>
 
-<body class="bg-gray-900 text-gray-100">
-    <!-- Header -->
-    <header class="bg-gray-800 border-b border-gray-700 shadow-lg">
-        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
-            <div class="flex items-center space-x-3">
-                <span class="text-3xl">🐝</span>
-                <h1 class="text-2xl font-bold text-blue-400">AI Hunter</h1>
-            </div>
-            <div class="flex items-center space-x-6">
-                <select id="mission-selector"
-                    class="bg-gray-700 text-gray-300 rounded px-3 py-1 text-sm border border-gray-600 focus:ring-2 focus:ring-blue-500">
-                    <option value="live">🔴 Live Mission</option>
-                </select>
-                <button id="open-evidence-modal" class="text-gray-400 hover:text-gray-200 transition" title="Evidence">
-                    📂 Evidence
-                </button>
-                <button id="open-settings-modal" class="text-gray-400 hover:text-gray-200 transition" title="Settings">
-                    ⚙️
-                </button>
-                <button id="open-mission-modal" class="text-blue-400 hover:text-blue-300 font-semibold transition">
-                    + New Mission
-                </button>
-                <div id="status-indicator" class="flex items-center space-x-2">
-                    <div class="w-3 h-3 bg-gray-500 rounded-full" id="status-dot"></div>
-                    <span id="status-text" class="text-sm text-gray-400">Disconnected</span>
-                </div>
-            </div>
-        </div>
-    </header>
+<body>
+    <!-- Header and the mission breadcrumb scroll as one sticky block. -->
+    <div id="stickytop">
+        <header id="top">
+            <button id="open-mission-modal" class="icon-btn" aria-label="New mission" title="New mission">+</button>
 
-    <!-- Main Content - Full Window -->
-    <main class="flex w-full" style="height: calc(100vh - 72px - 64px);">
-        <!-- Live Feed - Takes all remaining space -->
-        <section id="live-feed" class="flex-1 flex flex-col bg-gray-800">
-            <div class="px-6 py-4 border-b border-gray-700">
-                <h2 class="text-xl font-semibold text-purple-300">📡 Live Activity Feed</h2>
+            <nav id="topcrumbs" aria-label="breadcrumb">
+                <span class="tc home" id="crumb-home">AI Hunter</span>
+                <span class="tc-sep">›</span>
+                <span class="tc cur" id="feed-session" title="Click to rename">No mission selected</span>
+            </nav>
+
+            <span id="run-dot" title="idle"></span>
+            <span id="feed-session-status" class="pill">idle</span>
+
+            <button id="open-settings-modal" class="icon-btn" aria-label="Settings" title="Settings">⚙</button>
+        </header>
+    </div>
+
+    <div id="workspace">
+    <main id="view">
+        <!-- ===================== Feed ===================== -->
+        <section id="view-feed" class="view on">
+            <div class="row" style="margin-bottom:.5rem">
+                <button id="pause-btn" class="btn warn inline fixed" title="Pause immediately">⏸ Pause</button>
+                <button id="resume-btn" class="btn good inline fixed" title="Resume mission">▶ Resume</button>
+                <button id="stop-btn" class="btn danger inline fixed"
+                    title="Force stop — immediately terminate all tasks">⏹ Stop</button>
+                <span id="mission-control-status" class="item-time fixed"
+                    style="align-self:center">No mission</span>
             </div>
-            <div id="feed-content" class="space-y-2 overflow-y-auto flex-1 px-6 py-4">
-                <!-- Live updates will appear here -->
+
+            <div id="feed-content" class="list"></div>
+
+            <div class="row" style="margin-top:.6rem">
+                <input type="text" id="user-message-input" placeholder="Send a message to the agent..." disabled>
+                <button id="send-message-btn" class="btn inline fixed" disabled>Send</button>
             </div>
         </section>
 
-        <!-- Right Sidebar - Directly touches feed, no gap -->
-        <aside id="plan-sidebar"
-            class="w-80 flex-shrink-0 transition-all duration-300 bg-gray-800 border-l border-gray-700">
-            <div class="flex flex-col h-full">
-                <!-- Sidebar Header with Toggle -->
-                <div class="bg-gray-900 px-4 py-3 border-b border-gray-700 flex justify-between items-center">
-                    <div class="flex items-center space-x-2 flex-1">
-                        <button id="tab-plan"
-                            class="sidebar-tab active text-sm font-semibold text-blue-300 border-b-2 border-blue-400 px-2 py-1"
-                            onclick="switchSidebarTab('plan')">
-                            📋 Plan
-                        </button>
-                        <button id="tab-playbook"
-                            class="sidebar-tab text-sm font-semibold text-gray-400 hover:text-gray-300 px-2 py-1"
-                            onclick="switchSidebarTab('playbook')">
-                            🎯 Playbook
-                        </button>
-                        <button id="tab-ideas"
-                            class="sidebar-tab text-sm font-semibold text-gray-400 hover:text-gray-300 px-2 py-1"
-                            onclick="switchSidebarTab('ideas')">
-                            💡 Ideas
-                        </button>
-                    </div>
-                    <button id="sidebar-toggle" class="text-gray-400 hover:text-gray-200 text-xl ml-2"
-                        onclick="togglePlanSidebar()">
-                        ◀
-                    </button>
-                </div>
+        <!-- ===================== Findings ===================== -->
+        <section id="view-findings" class="view">
+            <h2 class="sect">Findings</h2>
+            <div id="findings-list" class="list"></div>
+        </section>
 
-                <!-- Sidebar Content -->
-                <div id="sidebar-content" class="flex-1 overflow-y-auto p-4">
-                    <!-- Plan Tab Content -->
-                    <div id="plan-tab-content" class="sidebar-tab-content">
-                        <div id="plan-status-container" class="text-sm text-gray-400 text-center py-8">
-                            No active plan
-                        </div>
-                    </div>
+        <!-- ===================== Evidence ===================== -->
+        <section id="view-evidence" class="view">
+            <h2 class="sect">Screenshots <span id="screenshot-count" class="pill">0</span></h2>
+            <div id="evidence-screenshots" class="shots"></div>
 
-                    <!-- Playbook Progress Tab Content -->
-                    <div id="playbook-tab-content" class="sidebar-tab-content hidden">
-                        <!-- Playbook Controls -->
-                        <div id="playbook-controls" class="mb-4 space-y-2 hidden">
-                            <div class="flex gap-2">
-                                <button onclick="pausePlaybook()"
-                                    class="flex-1 px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-xs font-semibold rounded transition">
-                                    ⏸️ Pause
-                                </button>
-                                <button onclick="resumePlaybook()"
-                                    class="flex-1 px-3 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded transition">
-                                    ▶️ Resume
-                                </button>
-                            </div>
-                            <button onclick="createCheckpoint()"
-                                class="w-full px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded transition">
-                                💾 Save Checkpoint
-                            </button>
-                            <button onclick="showCheckpoints()"
-                                class="w-full px-3 py-2 bg-gray-600 hover:bg-gray-700 text-white text-xs font-semibold rounded transition">
-                                📋 View Checkpoints
-                            </button>
-                        </div>
+            <h2 class="sect" style="margin-top:1rem">
+                Metadata <span id="metadata-count" class="pill">0</span>
+            </h2>
+            <div id="evidence-metadata" class="list"></div>
 
-                        <!-- Progress Display -->
-                        <div id="playbook-progress-container">
-                            <div class="text-sm text-gray-400 text-center py-8">
-                                No playbook running
-                            </div>
-                        </div>
-                    </div>
+            <h2 class="sect" style="margin-top:1rem">
+                Captured findings <span id="findings-count" class="pill">0</span>
+            </h2>
+            <div id="evidence-findings" class="list"></div>
+        </section>
 
-                    <!-- Ideas Tab Content -->
-                    <div id="ideas-tab-content" class="sidebar-tab-content hidden">
-                        <div id="ideas-container" class="text-sm text-gray-400 text-center py-8">
-                            No ideas suggested yet
-                        </div>
-                    </div>
-                </div>
+        <!-- ===================== Tool calls ===================== -->
+        <section id="view-tools" class="view">
+            <h2 class="sect">Tool calls</h2>
+            <div id="tools-list" class="list"></div>
+        </section>
+
+        <!-- ===================== LLM traces ===================== -->
+        <section id="view-llm" class="view">
+            <h2 class="sect">Model calls</h2>
+            <div id="llm-list" class="list"></div>
+        </section>
+
+        <!-- ===================== Plan ===================== -->
+        <section id="view-plan" class="view">
+            <h2 class="sect">Plan</h2>
+            <div id="plan-status-container" class="list"></div>
+
+            <div id="playbook-controls" class="row" style="margin-top:.8rem; display:none">
+                <button onclick="pausePlaybook()" class="btn warn inline">⏸ Pause</button>
+                <button onclick="resumePlaybook()" class="btn good inline">▶ Resume</button>
+                <button onclick="createCheckpoint()" class="btn sec inline">💾 Checkpoint</button>
+                <button onclick="showCheckpoints()" class="btn ghost inline">📋 Checkpoints</button>
             </div>
-        </aside>
+
+            <h2 class="sect" style="margin-top:1rem">Playbook progress</h2>
+            <div id="playbook-progress-container" class="list"></div>
+
+            <h2 class="sect" style="margin-top:1rem">Ideas</h2>
+            <div id="ideas-container" class="list"></div>
+        </section>
+
+        <!-- ===================== Missions ===================== -->
+        <section id="view-missions" class="view">
+            <h2 class="sect">Session</h2>
+            <select id="mission-selector">
+                <option value="live">🔴 Live (follow newest)</option>
+            </select>
+
+            <h2 class="sect" style="margin-top:1rem">All missions</h2>
+            <div id="mission-list" class="list"></div>
+        </section>
     </main>
 
-    <!-- Sticky Footer - Mission Control & Chat -->
-    <footer class="fixed bottom-0 left-0 right-0 bg-gray-800 border-t border-gray-700 shadow-lg z-40">
-        <div class="container mx-auto px-6 py-3">
-            <div class="flex items-center space-x-3">
-                <!-- Mission Control Buttons -->
-                <div class="flex space-x-2 border-r border-gray-600 pr-3">
-                    <button id="pause-btn"
-                        class="hidden px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm font-semibold rounded transition disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Pause after current task completes">
-                        ⏸️ Pause
-                    </button>
-                    <button id="resume-btn"
-                        class="hidden px-3 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded transition disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Resume mission">
-                        ▶️ Resume
-                    </button>
-                    <button id="stop-btn"
-                        class="hidden px-3 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded transition disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Force stop - immediately terminate all tasks">
-                        ⏹️ Stop
-                    </button>
-                </div>
-
-                <!-- Chat Input -->
-                <div class="flex-1 flex items-center space-x-2">
-                    <input type="text" id="user-message-input"
-                        class="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-                        placeholder="Send message to agent (will pause after current task)..." disabled>
-                    <button id="send-message-btn"
-                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
-                        disabled>
-                        📤 Send
-                    </button>
-                </div>
-
-                <!-- Status Indicator -->
-                <div id="mission-control-status" class="text-xs text-gray-400 min-w-24 text-right">
-                    No mission
-                </div>
-            </div>
+    <!-- Desktop only: details open beside the list, not on top of it, so you can
+         click straight through a set of records. Mobile uses #sheet instead. -->
+    <aside id="detail-panel" aria-live="polite">
+        <div id="detail-resize" class="resize-handle" role="separator" aria-orientation="vertical"
+            aria-label="Resize details panel" tabindex="0" title="Drag to resize (double-click to reset)"></div>
+        <div class="detail-head">
+            <h3 id="detail-title">Details</h3>
+            <button id="detail-close" class="icon-btn" aria-label="Close details">✕</button>
         </div>
-    </footer>
+        <div id="detail-body"></div>
+    </aside>
+    </div>
 
-    <!-- Mission Modal -->
-    <div id="mission-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center">
-        <div class="bg-gray-800 rounded-lg p-8 max-w-2xl w-full mx-4 border border-gray-700 shadow-2xl">
-            <div class="flex justify-between items-center mb-6">
-                <h2 class="text-2xl font-semibold text-blue-300">🚀 Start New Mission</h2>
-                <button id="close-mission-modal" class="text-gray-400 hover:text-gray-200 text-2xl">
-                    ×
-                </button>
+    <!-- Jump-to-latest pill, shown only when scrolled away from the bottom. -->
+    <button id="feed-jump">
+        <span id="feed-jump-label">New activity</span><span aria-hidden="true">↓</span>
+    </button>
+
+    <nav id="tabs">
+        <button data-tab="feed" class="on">⚡<span class="lbl">Feed</span></button>
+        <button data-tab="findings">◎<span class="lbl">Findings</span><span id="tab-count-findings"
+                class="count" hidden></span></button>
+        <button data-tab="evidence">▣<span class="lbl">Evidence</span></button>
+        <button data-tab="tools">↯<span class="lbl">Tools</span><span id="tab-count-tools" class="count"
+                hidden></span></button>
+        <button data-tab="llm">🧠<span class="lbl">Model</span><span id="tab-count-llm" class="count"
+                hidden></span></button>
+        <button data-tab="plan">▤<span class="lbl">Plan</span></button>
+        <button data-tab="missions">◈<span class="lbl">Missions</span></button>
+    </nav>
+
+    <!-- Full-screen detail view (tool call, finding, screenshot). -->
+    <div id="sheet" class="sheet hidden">
+        <div class="sheet-card" id="sheet-card"></div>
+    </div>
+
+    <!-- ===================== New mission ===================== -->
+    <div id="mission-modal" class="sheet hidden">
+        <div class="sheet-card">
+            <div class="sheet-head">
+                <h3>🚀 Start new mission</h3>
+                <button id="close-mission-modal" class="icon-btn">✕</button>
             </div>
 
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-sm font-medium mb-2">Target URL</label>
-                    <input type="url" id="target-url"
-                        class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        placeholder="http://localhost:62287/">
-                </div>
+            <label for="mission-name">Name (optional)</label>
+            <input type="text" id="mission-name" placeholder="Juice Shop — access control sweep" maxlength="200">
 
-                <div>
-                    <label class="block text-sm font-medium mb-2">Playbook (Optional)</label>
-                    <select id="playbook-selector"
-                        class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                        <option value="">🎯 Tactical Mode (Agent-driven)</option>
-                        <option value="ctf_idor_playbook">🏴 CTF IDOR Testing</option>
-                        <option value="test_simple_playbook">🧪 Simple Test Playbook</option>
-                    </select>
-                    <p class="text-xs text-gray-400 mt-1">
-                        Select a playbook for structured testing, or leave blank for free-form agent exploration
-                    </p>
-                </div>
+            <label for="target-url">Target URL</label>
+            <input type="url" id="target-url" placeholder="http://localhost:8080/">
 
-                <div id="playbook-info" class="hidden bg-gray-700 p-4 rounded-lg border border-gray-600">
-                    <h4 class="text-sm font-semibold text-blue-300 mb-2">📋 Playbook Details</h4>
-                    <p id="playbook-description" class="text-sm text-gray-300 mb-2"></p>
-                    <div class="flex space-x-4 text-xs text-gray-400">
-                        <span id="playbook-category"></span>
-                        <span id="playbook-difficulty"></span>
-                        <span id="playbook-duration"></span>
-                    </div>
-                </div>
+            <label for="playbook-selector">Playbook (optional)</label>
+            <select id="playbook-selector">
+                <option value="">🎯 Tactical mode (agent-driven)</option>
+            </select>
 
-                <div>
-                    <label class="block text-sm font-medium mb-2">Mission Instructions (Optional)</label>
-                    <textarea id="instructions" rows="4"
-                        class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        placeholder="Every time you see a value that looks like an ID, you should try to fuzz it with similar values. Do not try to create any new accounts."></textarea>
-                </div>
-
-                <button id="start-mission-btn"
-                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition duration-200 transform hover:scale-105">
-                    <span id="start-btn-text">Start Mission</span>
-                </button>
+            <div id="playbook-info" class="item" style="margin-top:.5rem; display:none">
+                <div class="k">Playbook</div>
+                <p id="playbook-description"></p>
+                <span id="playbook-category" class="pill"></span>
+                <span id="playbook-difficulty" class="pill"></span>
+                <span id="playbook-duration" class="pill"></span>
             </div>
+
+            <label for="instructions">Instructions (optional)</label>
+            <textarea id="instructions" rows="4"
+                placeholder="Focus on ID parameters. Don't create any accounts."></textarea>
+
+            <button id="start-mission-btn" class="btn"><span id="start-btn-text">Start mission</span></button>
         </div>
     </div>
 
-    <!-- Checkpoints Modal -->
-    <div id="checkpoints-modal"
-        class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center hidden z-50">
-        <div class="bg-gray-800 rounded-lg shadow-2xl w-11/12 max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
-            <!-- Header -->
-            <div class="bg-gray-900 px-6 py-4 flex justify-between items-center border-b border-gray-700">
-                <h2 class="text-xl font-bold text-blue-400">💾 Playbook Checkpoints</h2>
-                <button id="close-checkpoints-modal" class="text-gray-400 hover:text-gray-200 text-2xl">&times;</button>
+    <!-- ===================== Settings ===================== -->
+    <div id="settings-modal" class="sheet hidden">
+        <div class="sheet-card">
+            <div class="sheet-head">
+                <h3>⚙ Settings</h3>
+                <button id="close-settings-modal" class="icon-btn">✕</button>
             </div>
 
-            <!-- Content -->
-            <div class="flex-1 overflow-y-auto p-6">
-                <div id="checkpoints-list" class="space-y-3">
-                    <div class="text-sm text-gray-400 text-center py-8">
-                        Loading checkpoints...
-                    </div>
+            <div class="item">
+                <label style="margin:0">
+                    <input type="checkbox" id="hitl-enabled" style="width:auto"> Human-in-the-loop
+                </label>
+                <p class="k">Approve every tool call before it runs</p>
+            </div>
+
+            <div id="hitl-options" style="display:none">
+                <h2 class="sect" style="margin-top:.8rem">Auto-approve these tools</h2>
+                <div class="list">
+                    <label class="item"><input type="checkbox" value="view_raw_source" class="auto-approve-tool"
+                            style="width:auto"> view_raw_source</label>
+                    <label class="item"><input type="checkbox" value="view_dom" class="auto-approve-tool"
+                            style="width:auto"> view_dom</label>
+                    <label class="item"><input type="checkbox" value="check_network" class="auto-approve-tool"
+                            style="width:auto"> check_network</label>
+                    <label class="item"><input type="checkbox" value="navigate" class="auto-approve-tool"
+                            style="width:auto"> navigate</label>
+                    <label class="item"><input type="checkbox" value="click" class="auto-approve-tool"
+                            style="width:auto"> click</label>
+                    <label class="item"><input type="checkbox" value="type" class="auto-approve-tool"
+                            style="width:auto"> type</label>
                 </div>
             </div>
 
-            <!-- Footer -->
-            <div class="bg-gray-900 px-6 py-4 border-t border-gray-700 flex justify-end">
-                <button id="close-checkpoints-btn"
-                    class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg font-semibold transition">
-                    Close
-                </button>
-            </div>
+            <button id="save-settings-btn" class="btn">Save settings</button>
         </div>
     </div>
 
-    <!-- Evidence Modal -->
-    <div id="evidence-modal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center hidden z-50">
-        <div class="bg-gray-800 rounded-lg shadow-2xl w-11/12 max-w-6xl max-h-[90vh] overflow-hidden flex flex-col">
-            <!-- Header -->
-            <div class="bg-gray-900 px-6 py-4 flex justify-between items-center border-b border-gray-700">
-                <h2 class="text-xl font-bold text-blue-400">📂 Mission Evidence</h2>
-                <button id="close-evidence-modal" class="text-gray-400 hover:text-gray-200 text-2xl">&times;</button>
+    <!-- ===================== Evidence modal (legacy entry point) ========== -->
+    <div id="evidence-modal" class="sheet hidden">
+        <div class="sheet-card">
+            <div class="sheet-head">
+                <h3>📂 Evidence</h3>
+                <button id="close-evidence-modal" class="icon-btn">✕</button>
             </div>
+            <p class="k">Evidence now lives in its own tab.</p>
+        </div>
+    </div>
+    <button id="open-evidence-modal" hidden></button>
 
-            <!-- Content -->
-            <div class="flex-1 overflow-y-auto p-6 space-y-6">
-                <!-- Screenshots Section -->
-                <div>
-                    <h3 class="text-lg font-semibold text-blue-300 mb-3">📸 Screenshots (<span
-                            id="screenshot-count">0</span>)</h3>
-                    <div id="evidence-screenshots" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                        <!-- Screenshots will be inserted here -->
-                    </div>
-                </div>
-
-                <!-- Metadata Section -->
-                <div>
-                    <h3 class="text-lg font-semibold text-green-300 mb-3">📄 Metadata Files (<span
-                            id="metadata-count">0</span>)</h3>
-                    <div id="evidence-metadata" class="space-y-2">
-                        <!-- Metadata files will be inserted here -->
-                    </div>
-                </div>
-
-                <!-- Findings Section -->
-                <div>
-                    <h3 class="text-lg font-semibold text-yellow-300 mb-3">🔍 Findings (<span
-                            id="findings-count">0</span>)</h3>
-                    <div id="evidence-findings" class="space-y-2">
-                        <!-- Findings will be inserted here -->
-                    </div>
-                </div>
+    <!-- ===================== Checkpoints ===================== -->
+    <div id="checkpoints-modal" class="sheet hidden">
+        <div class="sheet-card">
+            <div class="sheet-head">
+                <h3>💾 Checkpoints</h3>
+                <button id="close-checkpoints-modal" class="icon-btn">✕</button>
             </div>
+            <div id="checkpoints-list" class="list"></div>
+            <button id="close-checkpoints-btn" class="btn sec">Close</button>
         </div>
     </div>
 
-    <!-- Settings Modal -->
-    <div id="settings-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center">
-        <div class="bg-gray-800 rounded-lg p-8 max-w-2xl w-full mx-4 border border-gray-700 shadow-2xl">
-            <div class="flex justify-between items-center mb-6">
-                <h2 class="text-2xl font-semibold text-blue-300">⚙️ Settings</h2>
-                <button id="close-settings-modal" class="text-gray-400 hover:text-gray-200 text-2xl">
-                    ×
-                </button>
-            </div>
+    <!-- Connection indicator, kept for sse.js -->
+    <span id="status-dot" hidden></span><span id="status-text" hidden></span>
 
-            <div class="space-y-6">
-                <!-- HITL Section -->
-                <div class="border-b border-gray-700 pb-6">
-                    <h3 class="text-lg font-semibold text-purple-300 mb-4">🤝 Human-In-The-Loop (HITL)</h3>
+    <!-- Sidebar stub: plan.js still guards on these, the Plan tab replaced them. -->
+    <div id="plan-sidebar" hidden></div><button id="sidebar-toggle" hidden></button>
 
-                    <div class="space-y-4">
-                        <label class="flex items-center space-x-3 cursor-pointer">
-                            <input type="checkbox" id="hitl-enabled"
-                                class="w-5 h-5 rounded bg-gray-700 border-gray-600">
-                            <span class="text-sm">Enable HITL - Require approval for all tool calls</span>
-                        </label>
-
-                        <div id="hitl-options" class="ml-8 space-y-3 hidden">
-                            <p class="text-sm text-gray-400">Auto-approve these tools (no human approval needed):</p>
-                            <div class="space-y-2">
-                                <label class="flex items-center space-x-2 cursor-pointer">
-                                    <input type="checkbox" class="auto-approve-tool" value="view_raw_source" checked>
-                                    <span class="text-sm">view_raw_source</span>
-                                </label>
-                                <label class="flex items-center space-x-2 cursor-pointer">
-                                    <input type="checkbox" class="auto-approve-tool" value="view_dom" checked>
-                                    <span class="text-sm">view_dom</span>
-                                </label>
-                                <label class="flex items-center space-x-2 cursor-pointer">
-                                    <input type="checkbox" class="auto-approve-tool" value="check_network" checked>
-                                    <span class="text-sm">check_network</span>
-                                </label>
-                                <label class="flex items-center space-x-2 cursor-pointer">
-                                    <input type="checkbox" class="auto-approve-tool" value="navigate">
-                                    <span class="text-sm">navigate</span>
-                                </label>
-                                <label class="flex items-center space-x-2 cursor-pointer">
-                                    <input type="checkbox" class="auto-approve-tool" value="click">
-                                    <span class="text-sm">click</span>
-                                </label>
-                                <label class="flex items-center space-x-2 cursor-pointer">
-                                    <input type="checkbox" class="auto-approve-tool" value="type">
-                                    <span class="text-sm">type</span>
-                                </label>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Future Settings Sections -->
-                <div class="border-b border-gray-700 pb-6">
-                    <h3 class="text-lg font-semibold text-purple-300 mb-4">🎨 Display</h3>
-                    <p class="text-sm text-gray-400">More settings coming soon...</p>
-                </div>
-
-                <button id="save-settings-btn"
-                    class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg transition duration-200">
-                    Save Settings
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Main Application (ES6 Modules) -->
     <script type="module" src="js/main.js"></script>
 </body>
 

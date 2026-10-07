@@ -5,13 +5,14 @@ Bridges the declarative YAML playbooks/runbooks to imperative Python execution
 
 import asyncio
 from typing import Optional, Dict, Any, List, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core.playbook_manager import PlaybookManager
 from core.runbook_engine import RunbookParser, RunbookExecutor, RunbookFlowManager
 from core.state_manager import StateManager, StateScope
 from core.tool_mapper import ToolMapper, ToolMapperError
+from core.tool_recorder import truncate
 from memory.finding_repository import FindingRepository
 
 
@@ -34,7 +35,7 @@ class PlaybookExecutorContext:
         self.goal = goal
         self.target_url = target_url
         self.instructions = instructions
-        self.start_time = datetime.utcnow()
+        self.start_time = datetime.now(timezone.utc)
         self.playbook_name = None
         self.playbook = None  # Full playbook definition
         self.execution_id = None
@@ -192,7 +193,7 @@ class PlaybookExecutor:
         
         # Generate checkpoint name if not provided
         if not checkpoint_name:
-            checkpoint_name = f"auto_stage_{self.context.current_stage}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+            checkpoint_name = f"auto_stage_{self.context.current_stage}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
         
         # Serialize context
         checkpoint_data = self.context.to_checkpoint_dict()
@@ -651,6 +652,16 @@ class PlaybookExecutor:
             else:
                 raise ValueError(f"Step '{step.get('name')}' missing 'action' field")
         
+        # Record the call before running it, so a hang or crash still leaves a row.
+        recorder = getattr(self.loop, 'tool_recorder', None)
+        execution_id = None
+        if recorder is not None and recorder.enabled:
+            execution_id = await self.loop.db.start_tool_execution(
+                recorder.mission_id, action,
+                truncate({'step': step.get('name'), 'step_id': step.get('id'),
+                          'tool': step.get('tool'), 'params': step})
+            )
+
         try:
             # Execute action using ToolMapper in thread pool (for Playwright sync API compatibility)
             findings = await asyncio.to_thread(
@@ -659,6 +670,11 @@ class PlaybookExecutor:
                 step,
                 execution_context
             )
+
+            if execution_id is not None:
+                await self.loop.db.complete_tool_execution(
+                    execution_id, truncate(findings if isinstance(findings, dict) else {'result': findings})
+                )
             
             # Validate findings match expected schema (optional)
             expected_findings = step.get('findings_to_log', [])
@@ -668,6 +684,11 @@ class PlaybookExecutor:
             return findings
             
         except ToolMapperError as e:
+            if execution_id is not None:
+                await self.loop.db.complete_tool_execution(
+                    execution_id, {'error': str(e)}, status='failed',
+                    error_message=f"{type(e).__name__}: {e}"
+                )
             self._log(f"[Step] ❌ Tool mapping error: {e}")
             # Raise exception to stop execution
             raise RunbookExecutionError(f"Step '{step.get('name')}' failed: {e}")
@@ -721,8 +742,11 @@ class PlaybookExecutor:
             triad = None
             try:
                 triad = self.loop.browser.get_snapshot_triad()
-            except:
-                pass  # Continue without visual context if unavailable
+            except Exception as e:
+                # Planning continues blind; make that visible rather than implying
+                # the model simply chose not to use a screenshot.
+                logger.warning("no visual context for step planning: %s", e, exc_info=True)
+                self._log(f"[Step] ⚠️ Visual context unavailable: {type(e).__name__}: {e}")
             
             # STEP 3: Build context for LLM planner
             planning_context = {
@@ -1004,7 +1028,7 @@ class PlaybookExecutor:
     def _build_execution_summary(self, status: str) -> Dict[str, Any]:
         """Build final execution summary"""
         
-        duration = (datetime.utcnow() - self.context.start_time).total_seconds()
+        duration = (datetime.now(timezone.utc) - self.context.start_time).total_seconds()
         
         return {
             'status': status,

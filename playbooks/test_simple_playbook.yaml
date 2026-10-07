@@ -62,7 +62,7 @@ configuration:
     require_auth: false
     
   llm_settings:
-    model: "gemini-2.5-pro"
+    model: "qwen38-27b-q8"
     temperature: 0.3
     budget_per_runbook: 10000
   

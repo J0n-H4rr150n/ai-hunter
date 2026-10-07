@@ -1,25 +1,20 @@
 [tool.poetry]
-name = "hive-mind-agent"
+name = "ai-hunter"
 version = "0.1.0"
-description = "Autonomous agent with hive-mind structured storage and local semantic search."
-authors = ["Your Name <you@example.com>"]
+description = "Autonomous web security testing agent driven by a locally hosted LLM."
+authors = ["J0n-H4rr150n <harrison.jonb@gmail.com>"]
 readme = "README.md"
-packages = [{include = "core"}, {include = "tools"}, {include = "memory"}, {include = "config"}]
+packages = [{include = "core"}, {include = "tools"}, {include = "memory"}, {include = "config"}, {include = "agents"}]
 
 [tool.poetry.dependencies]
 python = "^3.12"
+# Also the transport for the local llama-server OpenAI-compatible API
 requests = "^2.31.0"
 Pillow = "^10.0.0"
 # We explicitly request Numpy 2.1+ which has Python 3.13 wheels
 numpy = "^2.1.0"
-# TensorFlow for Universal Sentence Encoder (offline, corporate-friendly)
-tensorflow = "^2.15.0"
-tensorflow-hub = "^0.16.1"
-tensorflow-text = "^2.15.0"
 # Playwright for browser automation
 playwright = "^1.49.0"
-# Google Cloud Vertex AI for Gemini LLM
-google-cloud-aiplatform = "^1.38.0"
 # FastAPI for backend API
 fastapi = "^0.104.1"
 uvicorn = {extras = ["standard"], version = "^0.24.0"}
@@ -31,11 +26,17 @@ psycopg2-binary = "^2.9.9"
 redis = {extras = ["hiredis"], version = "^5.0.0"}
 # Alembic for database migrations
 alembic = "^1.13.0"
+# Runbook / playbook definitions
+PyYAML = "^6.0"
 
-[[tool.poetry.source]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-priority = "explicit"
+# Optional: pgvector semantic search over past findings (DISABLE_EMBEDDINGS=true by
+# default). TensorFlow is a heavy install, so it is opt-in via `poetry install -E embeddings`.
+tensorflow = {version = "^2.15.0", optional = true}
+tensorflow-hub = {version = "^0.16.1", optional = true}
+tensorflow-text = {version = "^2.15.0", optional = true}
+
+[tool.poetry.extras]
+embeddings = ["tensorflow", "tensorflow-hub", "tensorflow-text"]
 
 [build-system]
 requires = ["poetry-core"]

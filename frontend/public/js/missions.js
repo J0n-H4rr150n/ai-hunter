@@ -1,5 +1,7 @@
-import { BACKEND_URL, state } from './config.js';
-import { addToFeed } from './feed.js';
+import { BACKEND_URL, state, fmtDateTime, apiPost } from './config.js';
+import { addToFeed, resetFeedScroll, scrollFeedToBottom } from './feed.js';
+import { connectToSSE } from './sse.js';
+import { refreshActiveTab } from './tabs.js';
 
 export function updateMissionStatus(data) {
     console.log('Mission status update:', data);
@@ -12,111 +14,292 @@ export function updateMissionStatus(data) {
     }
 }
 
-export async function loadMissionHistory() {
+// Status badge styling shared by the selector and the feed header.
+const STATUS_STYLE = {
+    running: 'accent', executing: 'accent', planning: 'warn', paused: 'warn',
+    completed: 'good', stopped: '', aborted: 'warn', failed: 'bad',
+};
+
+// The header dot spins while something is running, mirroring Arena's bell.
+const RUN_DOT = {
+    running: 'running', executing: 'running', planning: 'running',
+    paused: 'warn', completed: 'good', failed: 'bad', aborted: 'bad', stopped: '',
+};
+
+function hostOf(url) {
+    try { return new URL(url).host; } catch { return url || 'unknown'; }
+}
+
+/** What to call a mission: its name if it has one, otherwise the target host. */
+export function missionLabel(m) {
+    return (m?.name || '').trim() || hostOf(m?.target_url);
+}
+
+// Rebuild the session picker. Called on boot and whenever a mission starts or ends,
+// so a newly started mission shows up without a reload.
+export async function loadMissionHistory(selectId = null) {
     try {
         const response = await fetch(`${BACKEND_URL}/api/missions`);
         if (!response.ok) return;
 
         const missions = await response.json();
-        const selector = document.getElementById('mission-selector');
+        state.missions = missions;
 
-        missions.forEach(mission => {
-            const option = document.createElement('option');
-            option.value = mission.id;
-            option.textContent = `Mission ${mission.id}: ${mission.target_url.substring(0, 30)}... (${mission.status})`;
-            selector.appendChild(option);
-        });
+        const selector = document.getElementById('mission-selector');
+        const previous = selectId ?? selector.value;
+        selector.innerHTML = '<option value="live">🔴 Live (follow newest)</option>';
+
+        missions
+            .slice()
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+            .forEach(mission => {
+                const option = document.createElement('option');
+                option.value = mission.id;
+                option.textContent =
+                    `#${mission.id} · ${missionLabel(mission)} · ${mission.status} · ${fmtDateTime(mission.created_at)}`;
+                selector.appendChild(option);
+            });
+
+        // Keep the user's selection across a refresh.
+        if (previous && [...selector.options].some(o => o.value === String(previous))) {
+            selector.value = String(previous);
+        }
+
+        renderMissionList(missions);
     } catch (error) {
         console.error('Failed to load mission history:', error);
+        const host = document.getElementById('mission-list');
+        if (host) host.innerHTML = `<p class="empty">Could not load missions: ${error.message}</p>`;
     }
+}
+
+/**
+ * The browsable list of sessions.
+ *
+ * The Missions tab had an empty "All missions" region: the markup existed but
+ * nothing ever populated it, so the only way to reach a session was a dropdown
+ * that is easy to miss on a phone.
+ */
+export function renderMissionList(missions) {
+    const host = document.getElementById('mission-list');
+    if (!host) return;
+
+    if (!missions || !missions.length) {
+        host.innerHTML = '<p class="empty">No missions yet. Use + to start one.</p>';
+        return;
+    }
+
+    const ACCENT = {
+        running: 'ok', executing: 'ok', planning: 'ok', paused: 'ok',
+        completed: 'ok', failed: 'err', aborted: 'err', stopped: '',
+    };
+
+    const sorted = missions.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    host.innerHTML = sorted.map(m => `
+        <div class="item clickable ${ACCENT[m.status] || ''}" data-mission="${m.id}">
+            <div class="item-head">
+                <strong>#${m.id} · ${escapeHtml(missionLabel(m))}</strong>
+                <span class="item-time">${escapeHtml(fmtDateTime(m.created_at))}</span>
+            </div>
+            <div style="margin-top:.25rem">
+                <span class="pill ${STATUS_STYLE[m.status] || ''}">${escapeHtml(m.status)}</span>
+                ${m.name ? `<span class="pill">${escapeHtml(hostOf(m.target_url))}</span>` : ''}
+                ${m.instructions ? `<span class="note">${escapeHtml(String(m.instructions).slice(0, 90))}…</span>` : ''}
+            </div>
+        </div>`).join('');
+
+    host.querySelectorAll('[data-mission]').forEach(el => {
+        el.addEventListener('click', async () => {
+            await selectMission(Number(el.dataset.mission));
+            // Jump to the feed: picking a session means wanting to see it.
+            const { showTab } = await import('./tabs.js');
+            showTab('feed');
+        });
+    });
+}
+
+function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Update the "which session am I looking at" header above the feed.
+export function setFeedSession(mission) {
+    const label = document.getElementById('feed-session');
+    const badge = document.getElementById('feed-session-status');
+    if (!label || !badge) return;
+
+    const dot = document.getElementById('run-dot');
+
+    if (!mission) {
+        label.textContent = 'Live — newest mission';
+        badge.textContent = 'live';
+        badge.className = 'pill';
+        if (dot) dot.className = '';
+        return;
+    }
+
+    label.textContent = `#${mission.id} · ${missionLabel(mission)}`;
+    label.title = `${mission.target_url} · started ${fmtDateTime(mission.created_at)}`
+        + '\nClick to rename';
+    label.dataset.missionId = String(mission.id);
+    label.style.cursor = 'pointer';
+    badge.textContent = mission.status;
+    badge.className = `pill ${STATUS_STYLE[mission.status] || ''}`;
+    if (dot) dot.className = RUN_DOT[mission.status] || '';
+}
+
+/**
+ * Re-read the mission and update the session badge and the picker label.
+ * Called on terminal/status events so a finished run stops reading as "running".
+ */
+/**
+ * Set the active session from anywhere.
+ *
+ * Several SSE handlers used to assign state.currentMissionId directly, which left
+ * the breadcrumb, the status pill and the other tabs out of sync — the header
+ * could read "#17" while Findings still said "select a mission".
+ */
+export async function setCurrentMission(missionId, { reload = false } = {}) {
+    if (!missionId) return;
+    const changed = state.currentMissionId !== missionId;
+    state.currentMissionId = missionId;
+
+    if (changed || reload) {
+        await refreshSessionHeader(missionId, { force: true });
+        refreshActiveTab();
+    }
+}
+
+export async function refreshSessionHeader(missionId, { force = false } = {}) {
+    if (!missionId) return;
+    if (!force && missionId !== state.currentMissionId) return;
+    try {
+        const mission = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}`)).json();
+        setFeedSession(mission);
+        await loadMissionHistory(missionId);
+    } catch (error) {
+        console.warn('Could not refresh session header:', error);
+    }
+}
+
+/**
+ * Rename the active mission from the breadcrumb.
+ *
+ * Twenty runs against the same host are indistinguishable by URL alone, so the
+ * label is editable in place rather than only at creation time.
+ */
+export function initMissionRename() {
+    const label = document.getElementById('feed-session');
+    label?.addEventListener('click', async () => {
+        const missionId = Number(label.dataset.missionId);
+        if (!missionId) return;
+
+        const mission = state.missions.find(m => m.id === missionId);
+        const current = (mission?.name || '').trim();
+        const next = window.prompt('Name this mission (blank to clear):', current);
+        if (next === null) return;
+
+        try {
+            await apiPost(`/api/missions/${missionId}/rename`, { name: next });
+            await loadMissionHistory(missionId);
+            await refreshSessionHeader(missionId, { force: true });
+        } catch (error) {
+            addToFeed({
+                message: `❌ Could not rename: ${error.message}`,
+                timestamp: new Date().toISOString(), type: 'error'
+            });
+        }
+    });
 }
 
 export function initMissionSelector() {
     document.getElementById('mission-selector').addEventListener('change', async (e) => {
         if (e.target.value === 'live') {
-            // Switching back to live mission view
-            state.currentMissionId = null;
-            document.getElementById('feed-content').innerHTML = '';
-
-            // Hide controls since no mission is running yet
-            updateMissionControls(null);
-
+            await selectLive();
             return;
         }
-
-        const missionId = parseInt(e.target.value);
-        await loadHistoricMission(missionId);
+        await selectMission(parseInt(e.target.value));
     });
 }
 
-async function loadHistoricMission(missionId) {
-    try {
-        console.log('Loading historic mission:', missionId);
-        state.currentMissionId = missionId;  // Set to historical mission
+// Follow whatever mission is newest, rather than a specific session.
+export async function selectLive() {
+    state.currentMissionId = null;
+    document.getElementById('feed-content').innerHTML = '';
+    resetFeedScroll();
+    setFeedSession(null);
+    updateMissionControls(null);
+    connectToSSE();            // global stream
+}
 
-        // 1. Clear current feed
+/**
+ * Switch the feed to one mission's session.
+ *
+ * The feed is rebuilt from the stored activity log, then the live stream is
+ * re-pointed at that mission, so the view only ever contains events for the
+ * selected session - live and historical missions render identically.
+ */
+export async function selectMission(missionId) {
+    try {
+        state.currentMissionId = missionId;
+
         const feedContent = document.getElementById('feed-content');
         feedContent.innerHTML = '';
+        resetFeedScroll();
 
-        // 2. Load mission details
-        const missionResponse = await fetch(`${BACKEND_URL}/api/missions/${missionId}`);
-        const mission = await missionResponse.json();
+        const mission = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}`)).json();
+        setFeedSession(mission);
 
-        // 3. Load activity feed history
-        const activityResponse = await fetch(`${BACKEND_URL}/api/missions/${missionId}/activity`);
-        const activityLogs = await activityResponse.json();
+        // Sync the dropdown when selection came from elsewhere (e.g. a new mission).
+        const selector = document.getElementById('mission-selector');
+        if (selector && selector.value !== String(missionId)) selector.value = String(missionId);
 
-        // Display header message
-        addToFeed({
-            message: `📜 Viewing historical mission ${missionId}: ${mission.target_url} (${mission.status})`,
-            timestamp: new Date().toISOString(),
-            type: 'info'
+        const events = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}/activity`)).json();
+        let lastLogId = 0;
+        events.forEach(event => {
+            if (event._log_id) lastLogId = Math.max(lastLogId, event._log_id);
+            // Pass the whole event, not a hand-picked subset: dropping the other
+            // fields is what made iteration_completed render as a bare type name
+            // with the summary it was carrying nowhere in sight, and left the
+            // entry with nothing to expand into.
+            addToFeed(event);
         });
 
-        // Display all historical activity logs
-        activityLogs.forEach(log => {
+        if (!events.length) {
             addToFeed({
-                message: log.message,
-                timestamp: log.timestamp,
-                type: log.message_type,
-                screenshot: log.screenshot_path ? { path: log.screenshot_path } : null
+                message: `📜 Mission #${missionId} has no recorded activity yet.`,
+                timestamp: new Date().toISOString(),
+                type: 'info'
             });
-        });
+        }
 
-        // 4. Load iterations/plan if available
+        // Resume the live stream after what we just replayed, so nothing is
+        // duplicated and nothing published mid-switch is missed.
+        connectToSSE(missionId, lastLogId);
+
+        const active = ['planning', 'running', 'executing', 'paused'].includes(mission.status);
+        updateMissionControls(active ? missionId : null);
+
+        // Findings/evidence/tools belong to the selected session, not the last one.
+        refreshActiveTab();
+
         try {
-            const iterationsResponse = await fetch(`${BACKEND_URL}/api/missions/${missionId}/iterations`);
-            const iterations = await iterationsResponse.json();
-
-            if (iterations && iterations.length > 0) {
-                updateIterationsDisplay(iterations);
-            }
+            const iterations = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}/iterations`)).json();
+            if (iterations && iterations.length) updateIterationsDisplay(iterations);
         } catch (err) {
             console.warn('No iterations for this mission:', err);
         }
-
-        // 5. Load evidence/findings
-        try {
-            const evidenceResponse = await fetch(`${BACKEND_URL}/api/missions/${missionId}/evidence`);
-            const evidence = await evidenceResponse.json();
-
-            updateEvidenceDisplay(evidence);
-        } catch (err) {
-            console.warn('No evidence for this mission:', err);
-        }
-
-        // 6. Hide mission controls for historical missions
-        updateMissionControls(null);
-
     } catch (error) {
-        console.error('Failed to load historic mission:', error);
+        console.error('Failed to select mission:', error);
         addToFeed({
-            message: `❌ Failed to load mission ${missionId}: ${error.message}`,
+            message: `❌ Could not load mission ${missionId}: ${error.message}`,
             timestamp: new Date().toISOString(),
             type: 'error'
         });
     }
 }
+
 
 // Helper function to update mission control button visibility
 function updateMissionControls(missionState) {
@@ -207,7 +390,8 @@ export function initNewMissionButton() {
             const endpoint = playbook ? '/api/missions/start-playbook' : '/api/missions/start';
             const payload = {
                 target_url: savedUrl,
-                instructions: savedInstructions || null
+                instructions: savedInstructions || null,
+                name: (document.getElementById('mission-name')?.value || '').trim() || null,
             };
 
             if (playbook) {
@@ -222,6 +406,10 @@ export function initNewMissionButton() {
 
             const data = await response.json();
             state.currentMissionId = data.mission_id;
+
+            // Make the new run a selectable session and show only its events.
+            await loadMissionHistory(data.mission_id);
+            await selectMission(data.mission_id);
 
             // Show controls for new running mission
             updateMissionControls({ status: 'running' });

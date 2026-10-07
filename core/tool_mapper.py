@@ -4,7 +4,7 @@ Bridges the declarative runbook actions (strings) to imperative tool methods (ca
 """
 
 from typing import Dict, Any, Callable, Optional, TYPE_CHECKING
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 # Use TYPE_CHECKING to avoid circular imports and runtime dependency issues
@@ -172,7 +172,7 @@ class ToolMapper:
             findings['_step_name'] = step.get('name')
             findings['_action'] = action
             findings['_tool'] = step.get('tool', 'unknown')
-            findings['_executed_at'] = datetime.utcnow().isoformat()
+            findings['_executed_at'] = datetime.now(timezone.utc).isoformat()
             findings['_success'] = True
             
             self.stats['actions_succeeded'] += 1

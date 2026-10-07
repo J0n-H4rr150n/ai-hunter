@@ -10,10 +10,11 @@ from pydantic import BaseModel
 from typing import Optional, List
 import asyncio
 import json
+import traceback
 import os
 import logging
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse
 
 # Import existing components
@@ -26,35 +27,24 @@ from core.quota_manager import QuotaManager
 from core.agent_tracker import AgentTracker
 from memory.finding_repository import FindingRepository
 from backend.database import Database
-from backend.redis_manager import RedisManager
+from core.event_bus import EventBus
 from core.state_manager import StateManager
 from tools.som_browser import SoMBrowser  # Add browser import
+from core.browser_thread import ThreadedBrowser
 from core.playbook_manager import PlaybookManager
 from core.playbook_executor import PlaybookExecutor
+from core.mission_control import MissionStopped, MissionAborted
+from core.tool_recorder import ToolRecorder
+from core.llm_recorder import LLMRecorder
+from core.logging_setup import configure_logging, log_unhandled
 
 # Setup logging
 log_dir = Path(__file__).parent.parent / "hive_bucket" / "logs"
 log_dir.mkdir(parents=True, exist_ok=True)
 
-# Backend logger
+# Root logging: timestamped, UTC, console + rotating file.
+configure_logging(log_dir)
 backend_logger = logging.getLogger("backend")
-backend_logger.setLevel(logging.DEBUG)
-
-# File handler with rotation (10MB max, keep 5 backups)
-backend_handler = RotatingFileHandler(
-    log_dir / "backend.log",
-    maxBytes=10*1024*1024,
-    backupCount=5
-)
-backend_handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-))
-backend_logger.addHandler(backend_handler)
-
-# Also log to console
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
-backend_logger.addHandler(console_handler)
 
 backend_logger.info("="*60)
 backend_logger.info("Backend logger initialized")
@@ -73,7 +63,9 @@ app.add_middleware(
 
 # Global state
 db = Database()
-redis_mgr = RedisManager()
+# Durable: every event is written to activity_logs before it is fanned out,
+# so nothing is lost when no browser is connected.
+events = EventBus(db)   # db is bound here; the pool is created in startup()
 state_mgr = None  # Initialize after db is ready
 active_missions = {}
 plan_approval_queues = {}  # mission_id -> asyncio.Queue for plan approvals
@@ -86,12 +78,12 @@ async def publish_mission_update(mission_id: int, message: str, event_type: str 
         "type": event_type,
         "mission_id": mission_id,
         "message": message,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
     if screenshot:
         event_data["screenshot"] = screenshot
     
-    await redis_mgr.publish_event("missions:all", event_data)
+    await events.publish_event("missions:all", event_data)
 
 # API endpoint to serve screenshots
 @app.get("/api/screenshots/{date}/{mission_id}/{filename}")
@@ -220,8 +212,13 @@ def transform_url_for_docker(url: str) -> str:
     return url
 
 # Pydantic models
+class MissionRename(BaseModel):
+    name: Optional[str] = None
+
+
 class MissionStart(BaseModel):
     target_url: str
+    name: Optional[str] = None
     instructions: Optional[str] = None
 
 class PlaybookMissionStart(BaseModel):
@@ -232,38 +229,59 @@ class PlaybookMissionStart(BaseModel):
 class PlanApproval(BaseModel):
     plan: dict
 
+# Long gaps are normal while the model generates, so keep the stream warm.
+SSE_KEEPALIVE_SECONDS = 15
+
+
+def _sse(event: dict) -> str:
+    return f"event: {event.get('type', 'message')}\ndata: {json.dumps(event, default=str)}\n\n"
+
+
 # SSE event stream generator
-async def event_stream(mission_id: Optional[int] = None):
-    """Server-Sent Events stream for real-time updates"""
-    # Subscribe to Redis channel
-    channel = f"mission:{mission_id}" if mission_id else "missions:all"
-    backend_logger.info(f"SSE client subscribing to {channel}")
-    print(f"🔊 SSE client subscribing to {channel}")
-    
-    # Create dedicated pubsub for this connection
-    pubsub = await redis_mgr.subscribe(channel)
-    
-    try:
-        async for event in redis_mgr.listen(pubsub):
-            # Format as SSE
-            event_type = event.get('type', 'message')
-            backend_logger.debug(f"SSE sending event type='{event_type}' to client")
-            print(f"📡 SSE sending event type='{event_type}' to client")
-            
-            # SSE format: event: type\ndata: json\n\n
-            sse_message = f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
-            backend_logger.debug(f"SSE message: {sse_message[:200]}...")
-            print(f"📤 SSE message: {sse_message[:200]}...")
-            yield sse_message
-    except asyncio.CancelledError:
-        backend_logger.info(f"SSE stream cancelled for {channel}")
-        print(f"❌ SSE stream cancelled for {channel}")
-    finally:
-        await pubsub.close()
+async def event_stream(mission_id: Optional[int] = None, replay_after: int = 0):
+    """
+    Server-Sent Events stream.
+
+    Subscribes first, then replays history, so an event published during the
+    handover is delivered by the live stream rather than falling in the gap.
+    Replayed events carry _log_id, which the client can send back as `after` to
+    resume without duplicates.
+    """
+    backend_logger.info(f"SSE client connected (mission={mission_id}, after={replay_after})")
+
+    async with events.subscribe(mission_id) as sub:
+        try:
+            if mission_id is not None:
+                seen = set()
+                for past in await events.replay(mission_id, after_id=replay_after):
+                    seen.add(past.get("_log_id"))
+                    yield _sse(past)
+                # Drain anything that arrived while replaying, skipping duplicates.
+                while not sub.queue.empty():
+                    live = sub.queue.get_nowait()
+                    if live.get("_log_id") not in seen:
+                        yield _sse(live)
+
+            # A slow model means minutes can pass with no events. Without traffic,
+            # browsers and any intermediary will eventually drop an idle SSE
+            # connection, and the UI would silently stop updating. A comment line
+            # keeps it alive and costs nothing.
+            while True:
+                try:
+                    event = await asyncio.wait_for(sub.queue.get(), timeout=SSE_KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                yield _sse(event)
+        except asyncio.CancelledError:
+            backend_logger.info(f"SSE stream closed (mission={mission_id})")
+            raise
 
 # Routes
-@app.get("/")
-async def root():
+# NOTE: "/" is deliberately not claimed here. In single-port mode (serve.py) the SPA
+# is mounted at the root, so the API advertises itself under /api/status instead.
+@app.get("/api/status")
+async def api_status():
     return {"status": "online", "service": "AI Hunter API"}
 
 @app.get("/health")
@@ -271,7 +289,7 @@ async def health():
     return {
         "status": "healthy",
         "database": await db.check_connection(),
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 # Frontend logging endpoint
@@ -287,7 +305,7 @@ async def log_frontend(log_entry: FrontendLog):
     log_dir = Path(__file__).parent.parent / "hive_bucket" / "logs"
     log_file = log_dir / "frontend.log"
     
-    timestamp = log_entry.timestamp or datetime.utcnow().isoformat()
+    timestamp = log_entry.timestamp or datetime.now(timezone.utc).isoformat()
     log_line = f"{timestamp} - {log_entry.level} - {log_entry.message}"
     if log_entry.data:
         log_line += f" - {json.dumps(log_entry.data)}"
@@ -312,10 +330,15 @@ async def events_all(request: Request):
     )
 
 @app.get("/api/events/{mission_id}")
-async def events_mission(mission_id: int, request: Request):
-    """SSE endpoint for specific mission events"""
+async def events_mission(mission_id: int, request: Request, after: int = 0):
+    """
+    SSE endpoint for a specific mission.
+
+    `after` is the last _log_id the client already has; the stream replays only
+    what came later, so a reconnect does not duplicate the feed.
+    """
     return StreamingResponse(
-        event_stream(mission_id),
+        event_stream(mission_id, replay_after=after),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -323,6 +346,82 @@ async def events_mission(mission_id: int, request: Request):
             "X-Accel-Buffering": "no"
         }
     )
+
+@app.get("/api/missions/{mission_id}/activity")
+async def get_mission_activity(mission_id: int, limit: int = 1000, after: int = 0):
+    """
+    Replayable activity log for a mission.
+
+    Backed by activity_logs rather than the live stream, so it works for finished
+    missions and after a restart.
+    """
+    return await events.replay(mission_id, limit=limit, after_id=after)
+
+
+@app.get("/api/missions/{mission_id}/tools")
+async def get_mission_tool_calls(mission_id: int, limit: int = 500):
+    """
+    Every tool call made during a mission, with inputs, outputs, status and timing.
+
+    Large payloads (DOM, page source) are stored truncated with the original size
+    recorded; the full artefacts live in hive_bucket.
+    """
+    return await db.get_tool_executions(mission_id, limit=limit)
+
+
+@app.get("/api/missions/{mission_id}/llm")
+async def get_mission_llm_traces(mission_id: int, limit: int = 200):
+    """Every model call made during a mission: prompt, response, tokens, timing."""
+    return await db.get_llm_traces(mission_id, limit=limit)
+
+
+@app.get("/api/missions/{mission_id}/findings")
+async def get_mission_findings(mission_id: int):
+    """
+    Findings for one mission, with their full content.
+
+    The artifacts endpoint only returned filenames and listed every finding on
+    disk regardless of mission, so the UI could neither scope nor summarise them.
+    """
+    findings_dir = Path(__file__).parent.parent / "hive_bucket" / "findings"
+    results = []
+    if findings_dir.exists():
+        for type_dir in sorted(findings_dir.iterdir()):
+            if not type_dir.is_dir():
+                continue
+            for finding_file in sorted(type_dir.glob("*.json")):
+                try:
+                    with open(finding_file, "r", encoding="utf-8") as fh:
+                        data = json.load(fh)
+                except (OSError, json.JSONDecodeError) as e:
+                    backend_logger.warning(f"unreadable finding {finding_file.name}: {e}")
+                    continue
+                # Findings written before mission_id existed have none; show them
+                # rather than hiding history, but mark them as unattributed.
+                if data.get("mission_id") not in (mission_id, None):
+                    continue
+                data["_filename"] = finding_file.name
+                data["_unattributed"] = data.get("mission_id") is None
+                results.append(data)
+
+    results.sort(key=lambda d: d.get("timestamp") or "")
+    return results
+
+
+@app.post("/api/missions/{mission_id}/rename")
+async def rename_mission(mission_id: int, body: MissionRename):
+    """Set or clear a mission's name. An empty name falls back to the target host."""
+    if not await db.get_mission(mission_id):
+        raise HTTPException(status_code=404, detail="Mission not found")
+
+    await db.rename_mission(mission_id, body.name)
+    await events.publish_event("missions:all", {
+        "type": "mission_renamed",
+        "mission_id": mission_id,
+        "name": (body.name or "").strip() or None,
+    })
+    return {"status": "ok", "name": (body.name or "").strip() or None}
+
 
 @app.post("/api/missions/start")
 async def start_mission(mission: MissionStart):
@@ -335,15 +434,19 @@ async def start_mission(mission: MissionStart):
     # Create mission in database
     mission_id = await db.create_mission(
         target_url=target_url,
-        instructions=mission.instructions
+        instructions=mission.instructions,
+        name=mission.name,
     )
     
     # Initialize components
     tracker = AgentTracker(agent_id=f"mission_{mission_id}")
-    repo = FindingRepository()
+    repo = FindingRepository(mission_id=mission_id)
     quota = QuotaManager(agent_id=f"mission_{mission_id}")
     
     auto_loop = AutonomousLoop(tracker, repo, quota, db)
+    auto_loop.events = events
+    auto_loop.tool_recorder = ToolRecorder(db, mission_id, asyncio.get_running_loop())
+    auto_loop.llm_recorder = LLMRecorder(db, mission_id, asyncio.get_running_loop())
     
     # Create approval queue for this mission
     approval_queue = asyncio.Queue()
@@ -364,8 +467,13 @@ async def start_mission(mission: MissionStart):
         "tool_approval_queue": tool_approval_queue
     }
     
-    # Start mission asynchronously (will pause at approval gate)
-    asyncio.create_task(run_mission(mission_id, auto_loop, target_url, mission.instructions, approval_queue, tool_approval_queue))
+    # Start mission asynchronously (will pause at approval gate). The handle is kept
+    # so /stop can cancel work already in flight rather than only setting a flag.
+    mission_task = asyncio.create_task(
+        run_mission(mission_id, auto_loop, target_url, mission.instructions, approval_queue, tool_approval_queue)
+    )
+    mission_task.add_done_callback(log_unhandled(backend_logger, f"mission {mission_id}"))
+    active_missions[mission_id]["task"] = mission_task
     
     # Publish mission started event
     await publish_mission_update(mission_id, f"🚀 Mission started: {target_url}", "mission_started")
@@ -418,7 +526,7 @@ async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: st
             }
             print(f"[Mission {mission_id}] Event data keys: {list(event_data.keys())}")
             
-            await redis_mgr.publish_event("missions:all", event_data)
+            await events.publish_event("missions:all", event_data)
             print(f"[Mission {mission_id}] Plan published, waiting for web UI approval...")
             
             # Wait for approval response from queue
@@ -460,16 +568,16 @@ async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: st
                 "tool_name": tool_name,
                 "tool_inputs": tool_inputs,
                 "context": context,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
-            await redis_mgr.publish_event("missions:all", event_data)
+            await events.publish_event("missions:all", event_data)
             print(f"[HITL Backend] Published, now waiting for response...")
             
             # Wait for approval response
-            start_time = datetime.utcnow()
+            start_time = datetime.now(timezone.utc)
             approval_response = await tool_approval_queue.get()
-            response_time_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            response_time_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
             print(f"[HITL Backend] Received response after {response_time_ms}ms: approved={approval_response.get('approved')}")
             
             # Save to database
@@ -504,19 +612,44 @@ async def run_mission(mission_id: int, auto_loop: AutonomousLoop, target_url: st
         
         # Mission completed
         await db.update_mission_status(mission_id, "completed")
-        await redis_mgr.publish_event("missions:all", {
+        await events.publish_event("missions:all", {
             "type": "mission_complete",
             "mission_id": mission_id,
             "summary": "Mission completed successfully"
         })
         
-    except Exception as e:
-        print(f"[Mission {mission_id}] Error: {e}")
-        await db.update_mission_status(mission_id, "failed")
-        await redis_mgr.publish_event("missions:all", {
+    except asyncio.CancelledError:
+        # A force stop cancels this task. Record it as stopped, not failed, and
+        # re-raise so cancellation is not swallowed.
+        backend_logger.info(f"[Mission {mission_id}] cancelled")
+        await db.update_mission_status(mission_id, "stopped")
+        raise
+
+    except MissionStopped:
+        backend_logger.info(f"[Mission {mission_id}] stopped by user")
+        await db.update_mission_status(mission_id, "stopped")
+        await publish_mission_update(mission_id, "⏹️ Mission stopped", "mission_status")
+
+    except MissionAborted as e:
+        # Ended early for a known reason. Previously these paths just returned, so
+        # the mission was marked "completed" and the UI reported success.
+        backend_logger.warning(f"[Mission {mission_id}] aborted: {e.reason}")
+        await db.update_mission_status(mission_id, "aborted")
+        await events.publish_event("missions:all", {
             "type": "mission_failed",
             "mission_id": mission_id,
-            "error": str(e)
+            "error": e.reason,
+        })
+
+    except Exception as e:
+        # exc_info gives the stack; str(e) alone lost where the failure came from.
+        backend_logger.error(f"[Mission {mission_id}] failed: {e}", exc_info=True)
+        await db.update_mission_status(mission_id, "failed")
+        await events.publish_event("missions:all", {
+            "type": "mission_failed",
+            "mission_id": mission_id,
+            "error": f"{type(e).__name__}: {e}",
+            "traceback": traceback.format_exc(),
         })
     finally:
         # Clean up
@@ -576,7 +709,7 @@ async def start_playbook_mission(mission: PlaybookMissionStart):
     
     # Initialize components
     tracker = AgentTracker(agent_id=f"mission_{mission_id}")
-    repo = FindingRepository()
+    repo = FindingRepository(mission_id=mission_id)
     quota = QuotaManager(agent_id=f"mission_{mission_id}")
     state_mgr = StateManager(db)  # Fix: pass db
     
@@ -585,35 +718,38 @@ async def start_playbook_mission(mission: PlaybookMissionStart):
     tool_approval_queues[mission_id] = tool_approval_queue
     
     # Publish mission started event
-    await redis_mgr.publish_event("missions:all", {
+    await events.publish_event("missions:all", {
         "type": "mission_started",
         "mission_id": mission_id,
         "message": f"Starting playbook: {mission.playbook_name}",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     # Publish playbook started event
-    await redis_mgr.publish_event("missions:all", {
+    await events.publish_event("missions:all", {
         "type": "playbook_started",
         "mission_id": mission_id,
         "playbook_name": mission.playbook_name,
         "goal": playbook.get("metadata", {}).get("description", ""),
         "total_stages": len(playbook.get("sequence", [])),
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     # Store in active missions
     active_missions[mission_id] = {
         "status": "running",
         "playbook": mission.playbook_name,
-        "started_at": datetime.utcnow().isoformat()
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "tool_approval_queue": tool_approval_queue
     }
     
     # Execute playbook in background
-    asyncio.create_task(execute_playbook_mission(
-        mission_id, mission.playbook_name, target_url, 
+    playbook_task = asyncio.create_task(execute_playbook_mission(
+        mission_id, mission.playbook_name, target_url,
         mission.instructions, tracker, repo, quota, state_mgr, tool_approval_queue
     ))
+    playbook_task.add_done_callback(log_unhandled(backend_logger, f"playbook mission {mission_id}"))
+    active_missions[mission_id]["task"] = playbook_task
     
     return {
         "mission_id": mission_id,
@@ -644,11 +780,20 @@ async def execute_playbook_mission(
         # Create AutonomousLoop for browser/tool access
         auto_loop = AutonomousLoop(tracker, repo, quota, db)
         auto_loop.mission_id = mission_id
+        auto_loop.events = events
+        auto_loop.tool_recorder = ToolRecorder(db, mission_id, asyncio.get_running_loop())
+        auto_loop.llm_recorder = LLMRecorder(db, mission_id, asyncio.get_running_loop())
+
+        # Publish it immediately so /pause and /stop have something to signal.
+        if mission_id in active_missions:
+            active_missions[mission_id]["loop"] = auto_loop
         
         # Initialize browser in thread pool (Playwright sync API can't run in asyncio loop)
         backend_logger.info("[Playbook] Initializing browser...")
         loop = asyncio.get_event_loop()
-        auto_loop.browser = await loop.run_in_executor(None, lambda: SoMBrowser(headless=True))
+        auto_loop.browser = await loop.run_in_executor(
+            None, lambda: ThreadedBrowser(lambda: SoMBrowser(headless=True))
+        )
         auto_loop.tracker.set_browser(auto_loop.browser)
         
         # Get event loop for callbacks
@@ -673,14 +818,14 @@ async def execute_playbook_mission(
             if not hitl_enabled or tool_name in auto_approve_tools:
                 return {'approved': True, 'edited_inputs': tool_inputs, 'feedback': None}
             
-            await redis_mgr.publish_event("missions:all", {
+            await events.publish_event("missions:all", {
                 "type": "tool_approval_request",
-                "approval_id": f"tool_{mission_id}_{datetime.utcnow().timestamp()}",
+                "approval_id": f"tool_{mission_id}_{datetime.now(timezone.utc).timestamp()}",
                 "mission_id": mission_id,
                 "tool_name": tool_name,
                 "tool_inputs": tool_inputs,
                 "context": context,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
             
             approval_response = await tool_approval_queue.get()
@@ -709,12 +854,12 @@ async def execute_playbook_mission(
         # Progress callback for UI updates
         async def progress_callback(progress_data: dict):
             """Publish playbook progress updates"""
-            await redis_mgr.publish_event("missions:all", {
+            await events.publish_event("missions:all", {
                 "type": "playbook_progress",
                 "mission_id": mission_id,
                 "playbook_name": playbook_name,
                 **progress_data,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
         
         # Tool approval callback
@@ -722,17 +867,17 @@ async def execute_playbook_mission(
         
         async def async_tool_approval(tool_name: str, tool_inputs: dict, context: dict) -> dict:
             """Request tool approval from user"""
-            approval_id = f"tool_{mission_id}_{datetime.utcnow().timestamp()}"
+            approval_id = f"tool_{mission_id}_{datetime.now(timezone.utc).timestamp()}"
             
             # Publish approval request
-            await redis_mgr.publish_event("missions:all", {
+            await events.publish_event("missions:all", {
                 "type": "tool_approval_request",
                 "approval_id": approval_id,
                 "mission_id": mission_id,
                 "tool_name": tool_name,
                 "tool_inputs": tool_inputs,
                 "context": context,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
             
             # Wait for approval
@@ -763,22 +908,22 @@ async def execute_playbook_mission(
         
         # Mission completed
         await db.update_mission_status(mission_id, "completed")
-        await redis_mgr.publish_event("missions:all", {
+        await events.publish_event("missions:all", {
             "type": "playbook_completed",
             "mission_id": mission_id,
             "playbook_name": playbook_name,
             "result": result,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
         
     except Exception as e:
         backend_logger.error(f"[Mission {mission_id}] Playbook execution error: {e}", exc_info=True)
         await db.update_mission_status(mission_id, "failed")
-        await redis_mgr.publish_event("missions:all", {
+        await events.publish_event("missions:all", {
             "type": "mission_failed",
             "mission_id": mission_id,
             "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
     finally:
         # Clean up
@@ -806,7 +951,7 @@ async def create_mission_checkpoint(mission_id: int):
         return {
             "checkpoint_name": checkpoint_name,
             "mission_id": mission_id,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
         backend_logger.error(f"Failed to create checkpoint: {e}")
@@ -845,7 +990,7 @@ async def restore_mission_checkpoint(mission_id: int, checkpoint_name: str):
             "restored": True,
             "checkpoint_name": checkpoint_name,
             "mission_id": mission_id,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
     except HTTPException:
         raise
@@ -867,10 +1012,10 @@ async def pause_playbook_mission(mission_id: int):
     executor = mission_info['executor']
     executor.pause_execution()
     
-    await redis_mgr.publish_event("missions:all", {
+    await events.publish_event("missions:all", {
         "type": "playbook_paused",
         "mission_id": mission_id,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     return {"paused": True, "mission_id": mission_id}
@@ -889,10 +1034,10 @@ async def resume_playbook_mission(mission_id: int):
     executor = mission_info['executor']
     executor.resume_execution()
     
-    await redis_mgr.publish_event("missions:all", {
+    await events.publish_event("missions:all", {
         "type": "playbook_resumed",
         "mission_id": mission_id,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     return {"resumed": True, "mission_id": mission_id}
@@ -916,7 +1061,7 @@ async def approve_plan(mission_id: int, approval: PlanApproval):
     await db.update_mission_status(mission_id, "executing")
     
     # Notify via SSE
-    await redis_mgr.publish_event("missions:all", {
+    await events.publish_event("missions:all", {
         "type": "plan_approved",
         "mission_id": mission_id
     })
@@ -941,7 +1086,7 @@ async def reject_plan(mission_id: int):
     await db.update_mission_status(mission_id, "rejected")
     
     # Notify via SSE
-    await redis_mgr.publish_event("missions:all", {
+    await events.publish_event("missions:all", {
         "type": "plan_rejected",
         "mission_id": mission_id
     })
@@ -1036,45 +1181,112 @@ async def approve_tool(approval: dict):
 # Mission control endpoints
 @app.post("/api/missions/{mission_id}/pause")
 async def pause_mission(mission_id: int):
-    """Request mission pause after current task"""
-    if mission_id in active_missions:
-        active_missions[mission_id]["status"] = "pausing"
-        # TODO: Implement actual pause signal to autonomous loop
-        await redis_mgr.publish_event("missions:all", {
-            "type": "mission_status",
-            "mission_id": mission_id,
-            "status": "pausing"
-        })
-        return {"status": "pausing"}
-    raise HTTPException(status_code=404, detail="Mission not found")
+    """Pause the mission at the next checkpoint (sub-second in practice)."""
+    mission = active_missions.get(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+
+    if mission.get("loop") is None:
+        raise HTTPException(status_code=409, detail="Mission is still starting up")
+    mission["loop"].control.request_pause()
+    mission["status"] = "paused"
+    await db.update_mission_status(mission_id, "paused")
+    await publish_mission_update(mission_id, "⏸️ Mission paused by user", "mission_log")
+    await events.publish_event("missions:all", {
+        "type": "mission_status",
+        "mission_id": mission_id,
+        "status": "paused"
+    })
+    return {"status": "paused"}
 
 @app.post("/api/missions/{mission_id}/resume")
 async def resume_mission(mission_id: int):
-    """Resume paused mission"""
-    if mission_id in active_missions:
-        active_missions[mission_id]["status"] = "running"
-        await redis_mgr.publish_event("missions:all", {
-            "type": "mission_status",
-            "mission_id": mission_id,
-            "status": "running"
-        })
-        return {"status": "running"}
-    raise HTTPException(status_code=404, detail="Mission not found")
+    """Resume a paused mission"""
+    mission = active_missions.get(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+
+    if mission.get("loop") is None:
+        raise HTTPException(status_code=409, detail="Mission is still starting up")
+    mission["loop"].control.resume()
+    mission["status"] = "running"
+    await db.update_mission_status(mission_id, "running")
+    await publish_mission_update(mission_id, "▶️ Mission resumed by user", "mission_log")
+    await events.publish_event("missions:all", {
+        "type": "mission_status",
+        "mission_id": mission_id,
+        "status": "running"
+    })
+    return {"status": "running"}
 
 @app.post("/api/missions/{mission_id}/stop")
 async def stop_mission(mission_id: int):
-    """Force stop mission immediately"""
-    if mission_id in active_missions:
-        # TODO: Implement force stop
-        active_missions[mission_id]["status"] = "stopped"
-        await db.update_mission_status(mission_id, "stopped")
-        await redis_mgr.publish_event("missions:all", {
-            "type": "mission_status",
-            "mission_id": mission_id,
-            "status": "stopped"
-        })
-        return {"status": "stopped"}
-    raise HTTPException(status_code=404, detail="Mission not found")
+    """
+    Force stop a mission immediately.
+
+    Three things have to happen for this to be instant rather than "after the current
+    phase": refuse to continue (control), kill work already in flight (close the
+    browser), and drop the coroutine (cancel the task).
+    """
+    mission = active_missions.get(mission_id)
+    if not mission:
+        # The mission already finished, or the process restarted. Stopping something
+        # that is not running is a no-op, not an error -- raising 404 here made the
+        # Stop button appear to do nothing.
+        row = await db.get_mission(mission_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Mission not found")
+        if row["status"] not in ("completed", "stopped", "aborted", "failed"):
+            await db.update_mission_status(mission_id, "stopped")
+            await publish_mission_update(mission_id, "⏹️ Mission marked stopped", "mission_status")
+        return {"status": "stopped", "was_active": False}
+
+    auto_loop = mission.get("loop")
+
+    # 1. No further steps, and release anything blocked in a pause.
+    if auto_loop is not None:
+        auto_loop.control.request_stop()
+
+    # 2. Cancel the mission coroutine.
+    task = mission.get("task")
+    if task and not task.done():
+        task.cancel()
+
+    # 3. Kill Chromium outright. A graceful close() would be queued onto the browser
+    #    thread behind the very operation we are aborting, so it would block for as
+    #    long as that operation takes. Killing the processes makes the in-flight call
+    #    fail immediately and returns straight away.
+    browser = getattr(auto_loop, "browser", None) if auto_loop is not None else None
+    if browser is not None:
+        auto_loop.browser = None
+        try:
+            killed = browser.kill()
+            backend_logger.info(f"[Mission {mission_id}] force stop killed {killed} browser process(es)")
+        except Exception as e:
+            backend_logger.warning(f"[Mission {mission_id}] browser kill during stop: {e}")
+
+    # 4. Unblock anything waiting on an approval gate.
+    for queue_key in ("approval_queue", "tool_approval_queue"):
+        queue = mission.get(queue_key)
+        if queue is not None:
+            try:
+                queue.put_nowait({"stopped": True, "approved": False})
+            except Exception:
+                pass
+
+    mission["status"] = "stopped"
+    await db.update_mission_status(mission_id, "stopped")
+    await publish_mission_update(
+        mission_id, "⏹️ Mission force-stopped by user (all tasks terminated)", "mission_log"
+    )
+    await events.publish_event("missions:all", {
+        "type": "mission_status",
+        "mission_id": mission_id,
+        "status": "stopped"
+    })
+
+    active_missions.pop(mission_id, None)
+    return {"status": "stopped"}
 
 class UserMessage(BaseModel):
     message: str
@@ -1084,11 +1296,11 @@ async def send_user_message(mission_id: int, msg: UserMessage):
     """Queue user message for agent (will pause after current task)"""
     if mission_id in active_missions:
         # TODO: Implement message queueing
-        await redis_mgr.publish_event("missions:all", {
+        await events.publish_event("missions:all", {
             "type": "user_message",
             "mission_id": mission_id,
             "message": msg.message,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
         return {"status": "queued"}
     raise HTTPException(status_code=404, detail="Mission not found")
@@ -1114,45 +1326,182 @@ async def approve_iteration(mission_id: int, iteration_num: int, approval: PlanA
     await db.update_iteration_status(iteration['id'], "in_progress")
     
     # Notify via SSE
-    await redis_mgr.publish_event("missions:all", {
+    await events.publish_event("missions:all", {
         "type": "iteration_started",
         "mission_id": mission_id,
         "iteration_number": iteration_num,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     return {"status": "approved", "iteration_id": iteration['id']}
 
+async def run_iteration_task(mission_id: int, auto_loop: AutonomousLoop, iteration_id: int, plan: dict):
+    """
+    Execute one iteration of an existing mission.
+
+    "Continue Hunting" used to stop at creating a pending iteration row - the plan
+    was generated and then nothing ran it, so the mission looked dead. This is the
+    missing execution half, with the same outcome handling as a full mission.
+    """
+    owns_browser = False
+    try:
+        mission = await db.get_mission(mission_id)
+        target_url = mission["target_url"]
+
+        if auto_loop.browser is None:
+            loop = asyncio.get_running_loop()
+            auto_loop.browser = await loop.run_in_executor(
+                None, lambda: ThreadedBrowser(lambda: SoMBrowser(headless=True))
+            )
+            auto_loop.tracker.set_browser(auto_loop.browser)
+            owns_browser = True
+
+        auto_loop.planner.set_mission(
+            f"Audit {target_url}", target_url, mission.get("instructions")
+        )
+        for tool_name, limit in (plan.get("budgets") or {}).items():
+            auto_loop.quota.set_limit(tool_name, limit)
+
+        await db.update_mission_status(mission_id, "running")
+        await auto_loop.run_iteration(iteration_id, plan)
+
+        await db.update_mission_status(mission_id, "completed")
+        await events.publish_event("missions:all", {
+            "type": "mission_complete",
+            "mission_id": mission_id,
+            "summary": f"Iteration complete",
+        })
+
+    except asyncio.CancelledError:
+        backend_logger.info(f"[Mission {mission_id}] iteration cancelled")
+        await db.update_mission_status(mission_id, "stopped")
+        raise
+    except MissionStopped:
+        await db.update_mission_status(mission_id, "stopped")
+    except Exception as e:
+        backend_logger.error(f"[Mission {mission_id}] iteration failed: {e}", exc_info=True)
+        await db.update_mission_status(mission_id, "failed")
+        await events.publish_event("missions:all", {
+            "type": "mission_failed",
+            "mission_id": mission_id,
+            "error": f"{type(e).__name__}: {e}",
+            "traceback": traceback.format_exc(),
+        })
+    finally:
+        if owns_browser and auto_loop.browser is not None:
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, auto_loop.browser.close)
+            except Exception as e:
+                backend_logger.warning(f"[Mission {mission_id}] browser close: {e}")
+            auto_loop.browser = None
+        active_missions.pop(mission_id, None)
+
+
 @app.post("/api/missions/{mission_id}/replan")
 async def replan_mission(mission_id: int):
-    """Create next iteration based on previous findings"""
-    if mission_id not in active_missions:
+    """
+    Continue hunting: plan and run another iteration for this mission.
+
+    The replan prompt is shown when an iteration finishes, by which point
+    run_mission has usually already cleaned the mission out of active_missions --
+    so this used to 404 and the "Continue Hunting" button did nothing. If the
+    mission is no longer resident we rebuild a runtime for it instead.
+    """
+    row = await db.get_mission(mission_id)
+    if not row:
         raise HTTPException(status_code=404, detail="Mission not found")
-    
+
+    resumed = mission_id not in active_missions
+    if resumed:
+        tracker = AgentTracker(agent_id=f"mission_{mission_id}")
+        repo = FindingRepository(mission_id=mission_id)
+        quota = QuotaManager(agent_id=f"mission_{mission_id}")
+
+        auto_loop = AutonomousLoop(tracker, repo, quota, db)
+        auto_loop.mission_id = mission_id
+        auto_loop.events = events
+        auto_loop.tool_recorder = ToolRecorder(db, mission_id, asyncio.get_running_loop())
+        auto_loop.llm_recorder = LLMRecorder(db, mission_id, asyncio.get_running_loop())
+
+        main_loop = asyncio.get_running_loop()
+
+        def ui_log_callback(message: str, screenshot: dict = None):
+            asyncio.run_coroutine_threadsafe(
+                publish_mission_update(mission_id, message, "mission_log", screenshot),
+                main_loop
+            )
+
+        auto_loop.ui_callback = ui_log_callback
+
+        active_missions[mission_id] = {
+            "loop": auto_loop,
+            "tracker": tracker,
+            "repo": repo,
+            "quota": quota,
+            "status": "running",
+        }
+        await db.update_mission_status(mission_id, "running")
+        await publish_mission_update(mission_id, "🔄 Resuming mission for another iteration...", "mission_log")
+
+    auto_loop = active_missions[mission_id]['loop']
+    iterations = await db.get_iterations_for_mission(mission_id)
+    current_iteration_num = len(iterations)
+
+    # Planning is an LLM call and can take minutes on a local model. Do it in the
+    # background and answer straight away: an HTTP request left hanging for the
+    # duration will be abandoned by the browser long before the model finishes.
+    task = asyncio.create_task(
+        plan_and_run_iteration(mission_id, auto_loop, current_iteration_num)
+    )
+    task.add_done_callback(
+        log_unhandled(backend_logger, f"mission {mission_id} iteration {current_iteration_num + 1}")
+    )
+    active_missions[mission_id]["task"] = task
+
+    return {
+        "status": "started",
+        "mission_id": mission_id,
+        "iteration_number": current_iteration_num + 1,
+        "message": "Planning the next iteration; progress will appear in the feed.",
+    }
+
+
+async def plan_and_run_iteration(mission_id: int, auto_loop: AutonomousLoop, current_iteration_num: int):
+    """Generate the next iteration's plan, then execute it."""
     try:
-        # Get the autonomous loop instance
-        auto_loop = active_missions[mission_id]['loop']
-        
-        # Get current iteration count
-        iterations = await db.get_iterations_for_mission(mission_id)
-        current_iteration_num = len(iterations)
-        
-        # Generate next iteration plan
-        next_iteration_id = await auto_loop.generate_next_iteration_plan(mission_id, current_iteration_num)
-        
-        # Publish event
-        await redis_mgr.publish_event("missions:all", {
+        await publish_mission_update(
+            mission_id, f"🧠 Planning iteration {current_iteration_num + 1}...", "mission_log"
+        )
+        next_iteration_id = await auto_loop.generate_next_iteration_plan(
+            mission_id, current_iteration_num
+        )
+
+        await events.publish_event("missions:all", {
             "type": "replan_complete",
             "mission_id": mission_id,
             "iteration_id": next_iteration_id,
             "iteration_number": current_iteration_num + 1,
-            "timestamp": datetime.utcnow().isoformat()
         })
-        
-        return {"status": "success", "iteration_id": next_iteration_id, "iteration_number": current_iteration_num + 1}
+
+        iterations = await db.get_iterations_for_mission(mission_id)
+        new_iteration = next((i for i in iterations if i["id"] == next_iteration_id), None)
+        plan = (new_iteration or {}).get("plan") or {}
+
+        await run_iteration_task(mission_id, auto_loop, next_iteration_id, plan)
+
+    except asyncio.CancelledError:
+        await db.update_mission_status(mission_id, "stopped")
+        raise
     except Exception as e:
-        backend_logger.error(f"Replan failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        backend_logger.error(f"[Mission {mission_id}] replan failed: {e}", exc_info=True)
+        await db.update_mission_status(mission_id, "failed")
+        await events.publish_event("missions:all", {
+            "type": "mission_failed",
+            "mission_id": mission_id,
+            "error": f"replan failed: {type(e).__name__}: {e}",
+            "traceback": traceback.format_exc(),
+        })
+        active_missions.pop(mission_id, None)
 
 
 # WebSocket endpoint removed - using SSE instead
@@ -1163,7 +1512,7 @@ async def startup():
     global state_mgr
     backend_logger.info("Starting backend API...")
     await db.initialize()
-    await redis_mgr.connect()
+    await events.connect()
     state_mgr = StateManager(db)
     backend_logger.info("🚀 Backend API started with state management")
     print("🚀 Backend API started")
@@ -1172,7 +1521,7 @@ async def startup():
 async def shutdown():
     """Cleanup on shutdown"""
     await db.close()
-    await redis_mgr.disconnect()
+    await events.disconnect()
     print("👋 Backend API stopped")
 
 if __name__ == "__main__":

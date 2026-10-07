@@ -1,4 +1,6 @@
 # config/safety.py
+import os
+
 
 # 1. PARAMETER LIMITS (Immutable physics of the engine)
 # These are code-level constraints that the LLM cannot override.
@@ -6,9 +8,11 @@ SAFETY_LIMITS = {
     "FUZZER_MAX_RANGE": 50,       # Max IDs to scan in one batch (e.g., 1-50)
     "FUZZER_MAX_CONCURRENCY": 5,  # Max threads/connections
     "FUZZER_DELAY": 0.5,          # Seconds between batches (Rate Limiting)
-    "FUZZER_TIMEOUT": 5.0,        # Seconds before dropping a request
-    "NAV_TIMEOUT": 10000,         # 10s max for page loads (Playwright)
-    "MAX_DOM_CHARS": 20000,       # Truncate DOM/Source before sending to Gemini to save tokens
+    "FUZZER_TIMEOUT": float(os.getenv("FUZZER_TIMEOUT", "15")),   # Seconds before dropping a request
+    # Page loads on a lab target behind a tunnel can be slow; this is a guardrail
+    # against hanging forever, not a performance assumption.
+    "NAV_TIMEOUT": int(os.getenv("NAV_TIMEOUT_MS", "45000")),
+    "MAX_DOM_CHARS": 20000,       # Truncate DOM/Source before sending to the model to save tokens
 }
 
 # 2. HARD CAPS (The "Ceiling")
@@ -45,8 +49,8 @@ def sanitize_fuzz_range(start: int, end: int) -> tuple[int, int, str]:
     try:
         start = int(start)
         end = int(end)
-    except:
-        return 1, 5, "Invalid integers provided. Reset to default 1-5."
+    except (TypeError, ValueError) as e:
+        return 1, 5, f"Invalid fuzz range ({start!r}, {end!r}): {e}. Reset to default 1-5."
 
     # 1. Ensure logical order
     if start > end:
