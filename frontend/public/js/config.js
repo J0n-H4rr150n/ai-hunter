@@ -50,6 +50,9 @@ export function tzAbbrev(ts) {
 // Global state
 export let state = {
     currentMissionId: null,
+    // Which mission the live stream is scoped to (null = follow all)
+    streamMissionId: null,
+    missions: [],
     currentPlan: null,
     currentPlanStatus: null, // 'approved', 'edited', 'rejected'
     currentPlaybook: null, // Current playbook name

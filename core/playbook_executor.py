@@ -721,8 +721,11 @@ class PlaybookExecutor:
             triad = None
             try:
                 triad = self.loop.browser.get_snapshot_triad()
-            except:
-                pass  # Continue without visual context if unavailable
+            except Exception as e:
+                # Planning continues blind; make that visible rather than implying
+                # the model simply chose not to use a screenshot.
+                logger.warning("no visual context for step planning: %s", e, exc_info=True)
+                self._log(f"[Step] ⚠️ Visual context unavailable: {type(e).__name__}: {e}")
             
             # STEP 3: Build context for LLM planner
             planning_context = {

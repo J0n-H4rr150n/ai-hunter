@@ -1,3 +1,4 @@
+import logging
 import time
 import asyncio
 from core.planner import Planner
@@ -8,12 +9,15 @@ from tools.tech_scanner import TechScanner
 from tools.fuzzer import Fuzzer
 from tools.som_browser import SoMBrowser
 from core.browser_thread import ThreadedBrowser
-from core.mission_control import MissionControl, MissionStopped
+from core.mission_control import MissionControl, MissionStopped, MissionAborted
 from memory.finding_repository import FindingRepository
 from core.agent_tracker import AgentTracker
 from config.config import Config
 from core.quota_manager import QuotaManager
 from core.playbook_executor import PlaybookExecutor, PlaybookExecutionError
+
+logger = logging.getLogger(__name__)
+
 
 class AutonomousLoop:
     """
@@ -42,6 +46,9 @@ class AutonomousLoop:
         # UI integration
         self.mission_id = None
         self.ui_callback = None
+        # Durable event bus, injected by the backend. Events are persisted before
+        # they are broadcast, so they survive with no UI connected.
+        self.events = None
         self.web_approval_callback = None  # For plan approval
         self.tool_approval_callback = None  # For HITL tool approval
         self.hitl_enabled = False  # HITL flag
@@ -163,15 +170,16 @@ class AutonomousLoop:
             if self.browser:
                 self.browser = None
             self.tracker.set_browser(None)
-            return
+            raise
         except Exception as e:
-            self.log_to_ui(f"[Auto] ❌ Plan generation failed: {e}")
+            logger.error("plan generation failed for mission %s", self.mission_id, exc_info=True)
+            self.log_to_ui(f"[Auto] ❌ Plan generation failed: {type(e).__name__}: {e}")
             self.log_to_ui("[Auto] 🛑 Aborting mission")
             if self.browser:
                 self.browser.close()
                 self.browser = None
             self.tracker.set_browser(None)
-            return
+            raise MissionAborted(f"plan generation failed: {type(e).__name__}: {e}") from e
         
         # 4. INTERRUPT: Human Approval Gate
         self.log_to_ui("\n[Auto] ⏸️  PAUSING for human approval...")
@@ -197,7 +205,7 @@ class AutonomousLoop:
                 self.browser.close()
                 self.browser = None
             self.tracker.set_browser(None)
-            return
+            raise MissionAborted("plan rejected by operator")
         
         # 5. Apply approved/edited plan and create Iteration 1
         workflow.approve(edited_plan)
@@ -653,7 +661,11 @@ class AutonomousLoop:
         try:
             page_content = page.content()
             visible_text = page.inner_text('body')
-        except:
+        except Exception as e:
+            # Fuzz analysis runs against empty strings if this fails, so the result
+            # would look like a clean response rather than an unobserved one.
+            logger.warning("could not read page for fuzz analysis: %s", e, exc_info=True)
+            analysis["analysis_error"] = f"{type(e).__name__}: {e}"
             page_content = ""
             visible_text = ""
         
@@ -679,7 +691,7 @@ class AutonomousLoop:
                 try:
                     idx = combined_text.index(pattern.lower())
                     analysis["error_message"] = combined_text[max(0, idx-50):idx+200]
-                except:
+                except ValueError:
                     analysis["error_message"] = f"Pattern '{pattern}' detected"
                 break
         
@@ -814,25 +826,17 @@ class AutonomousLoop:
             self.log_to_ui("[Auto] ✅ Iteration marked as completed")
         
         # Publish iteration_completed event for UI
-        if hasattr(self, 'mission_id'):
-            from backend.redis_manager import RedisManager
-            redis_mgr = RedisManager()
-            await redis_mgr.connect()
-            
-            # Get current iteration number
+        if self.mission_id and self.events:
             iteration = await self.db.get_iteration(iteration_id)
-            iteration_num = iteration.get('iteration_number', 1)
-            
-            await redis_mgr.publish_event("missions:all", {
+            iteration_num = (iteration or {}).get('iteration_number', 1)
+
+            await self.events.publish_event("missions:all", {
                 "type": "iteration_completed",
                 "mission_id": self.mission_id,
                 "iteration_number": iteration_num,
                 "iteration_id": iteration_id,
                 "summary": summary,
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             })
-            
-            await redis_mgr.disconnect()
         
         return summary
     
@@ -915,8 +919,8 @@ class AutonomousLoop:
             if self.browser:
                 try:
                     triad = self.browser.get_snapshot_triad()
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning("snapshot unavailable for replanning: %s", e, exc_info=True)
             
             prompt = f"""
             Mission: Security testing of {target_url}

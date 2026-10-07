@@ -8,7 +8,7 @@ entrypoint serves the SPA and the API from one TLS origin instead, so the whole 
 reachable at https://<tailscale-host>:30170/ with same-origin API calls.
 
 Run:
-    docker compose up -d postgres redis          # dependencies only
+    docker compose up -d postgres               # the only dependency
     PORT=30170 python3 serve.py
 
 TLS uses the shared dev cert if present, otherwise it falls back to HTTP.
@@ -23,9 +23,8 @@ from fastapi import Request
 
 HERE = Path(__file__).resolve().parent
 
-# Native runs reach Postgres/Redis on their published host ports, not container names.
+# Native runs reach Postgres on its published host port, not the container name.
 os.environ.setdefault("DATABASE_URL", "postgresql://hunter:hunter_pass_dev@127.0.0.1:33001/ai_hunter")
-os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:33002")
 
 from backend.main import app  # noqa: E402  (must follow the env defaults above)
 

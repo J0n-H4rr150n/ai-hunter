@@ -45,8 +45,8 @@ def sanitize_fuzz_range(start: int, end: int) -> tuple[int, int, str]:
     try:
         start = int(start)
         end = int(end)
-    except:
-        return 1, 5, "Invalid integers provided. Reset to default 1-5."
+    except (TypeError, ValueError) as e:
+        return 1, 5, f"Invalid fuzz range ({start!r}, {end!r}): {e}. Reset to default 1-5."
 
     # 1. Ensure logical order
     if start > end:

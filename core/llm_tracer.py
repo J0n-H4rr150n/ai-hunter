@@ -106,9 +106,9 @@ class LLMTrace:
 class LLMTracer:
     """Manages LLM tracing and storage"""
     
-    def __init__(self, database=None, redis_manager=None):
+    def __init__(self, database=None, event_bus=None):
         self.database = database
-        self.redis = redis_manager
+        self.events = event_bus
     
     async def start_trace(
         self,
@@ -154,8 +154,8 @@ class LLMTracer:
             await self.database.save_llm_trace(trace)
         
         # Publish to Redis for real-time monitoring
-        if self.redis and trace.mission_id:
-            await self.redis.publish_mission_event(
+        if self.events and trace.mission_id:
+            await self.events.publish_mission_event(
                 trace.mission_id,
                 "llm_trace",
                 {

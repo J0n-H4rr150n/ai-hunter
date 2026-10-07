@@ -1,8 +1,12 @@
+import logging
 import time
 import json
 from typing import Dict, Any, Tuple, List, Optional
 from playwright.sync_api import sync_playwright, Page, ElementHandle, Response
 from config.safety import SAFETY_LIMITS
+
+logger = logging.getLogger(__name__)
+
 
 class SoMBrowser:
     def __init__(self, headless=False, state_file=None):
@@ -50,8 +54,11 @@ class SoMBrowser:
             # We use a separate request to get raw source to see comments/hidden fields
             # Short timeout because this is secondary intel
             raw_source = self.page.request.get(self.page.url).text()
-        except:
-            raw_source = "Raw source fetch failed (likely SPA or Auth wall)."
+        except Exception as e:
+            # The agent reasons over this text, so record why it is missing rather
+            # than handing it a bare failure string with no explanation.
+            logger.warning("raw source fetch failed for %s: %s", self.page.url, e)
+            raw_source = f"Raw source fetch failed ({type(e).__name__}: {e})"
 
         # 3. NETWORK (Recent Logs)
         network_summary = self._get_recent_network_activity()
@@ -89,7 +96,8 @@ class SoMBrowser:
                 if "token" in k.lower() or "auth" in k.lower():
                     if v.startswith("eyJ"): # Standard JWT start
                         headers["Authorization"] = f"Bearer {v}"
-        except:
+        except Exception as e:
+            logger.warning("storage/JWT inspection failed: %s", e, exc_info=True)
             origins = "{}"
 
         return {
@@ -117,15 +125,18 @@ class SoMBrowser:
             try:
                 if "application/json" in response.headers.get("content-type", ""):
                     log_entry["body"] = str(response.json())[:500] # Truncate
-            except:
-                pass
+            except Exception as e:
+                # A body that will not parse is normal (streamed/binary); note it
+                # on the entry so the agent is not silently missing data.
+                log_entry["body_error"] = f"{type(e).__name__}: {e}"
+                logger.debug("could not capture JSON body for %s: %s", log_entry.get("url"), e)
 
             self.network_logs.append(log_entry)
             # Keep buffer small
             if len(self.network_logs) > 50:
                 self.network_logs.pop(0)
-        except:
-            pass
+        except Exception as e:
+            logger.warning("network capture handler failed: %s", e, exc_info=True)
 
     def _get_recent_network_activity(self) -> str:
         if not self.network_logs: return "No recent XHR/Fetch."
@@ -253,12 +264,13 @@ class SoMBrowser:
                         if handle == elements[0]:
                             return elem_id
             return None
-        except:
+        except Exception as e:
+            logger.debug("submit button lookup failed: %s", e)
             return None
 
     def close(self):
         try:
             self.browser.close()
             self.playwright.stop()
-        except:
-            pass
+        except Exception as e:
+            logger.warning("browser shutdown was not clean: %s", e)

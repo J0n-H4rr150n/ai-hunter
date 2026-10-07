@@ -2,16 +2,27 @@ import { BACKEND_URL, state, logToBackend } from './config.js';
 import { addToFeed } from './feed.js';
 import { showPlanApproval } from './plan.js';
 import { showToolApproval } from './tools.js';
-import { updateMissionStatus } from './missions.js';
+import { updateMissionStatus, refreshSessionHeader } from './missions.js';
 import { enableControls, updateControlStatus } from './control.js';
 import { showReplanPrompt } from './replan.js';
 
-export function connectToSSE() {
+/**
+ * Connect the live stream.
+ *
+ * With a missionId the stream is scoped to that session and resumes after
+ * `afterLogId`, which is the last event already rendered from the replay. Without
+ * one it follows every mission (the "Live" option).
+ */
+export function connectToSSE(missionId = null, afterLogId = 0) {
     if (state.eventSource) {
         state.eventSource.close();
     }
 
-    state.eventSource = new EventSource(`${BACKEND_URL}/api/events`);
+    const url = missionId
+        ? `${BACKEND_URL}/api/events/${missionId}?after=${afterLogId}`
+        : `${BACKEND_URL}/api/events`;
+    state.streamMissionId = missionId;
+    state.eventSource = new EventSource(url);
 
     state.eventSource.onopen = () => {
         console.log('✅ Connected to backend (SSE)');
@@ -46,6 +57,7 @@ export function connectToSSE() {
         if (data.status) {
             updateControlStatus(data.status);
         }
+        refreshSessionHeader(data.mission_id);
     });
 
     // Mission log with screenshots
@@ -139,6 +151,7 @@ export function connectToSSE() {
     // Mission complete
     state.eventSource.addEventListener('mission_complete', (event) => {
         const data = JSON.parse(event.data);
+        refreshSessionHeader(data.mission_id);
         addToFeed({
             message: `✅ ${data.message || data.summary || 'Mission complete'}`,
             timestamp: data.timestamp || new Date().toISOString()
@@ -148,6 +161,7 @@ export function connectToSSE() {
     // Mission failed
     state.eventSource.addEventListener('mission_failed', (event) => {
         const data = JSON.parse(event.data);
+        refreshSessionHeader(data.mission_id);
         addToFeed({
             message: `❌ Mission failed: ${data.error || 'Unknown error'}`,
             timestamp: data.timestamp || new Date().toISOString()

@@ -23,6 +23,21 @@ class MissionStopped(Exception):
     """Raised at a checkpoint when a stop has been requested."""
 
 
+class MissionAborted(Exception):
+    """
+    Raised when a mission ends early for a reason that is not a user stop:
+    planning failed, the operator rejected the plan, and so on.
+
+    This exists because the abort paths used to `return` instead, and the caller
+    could not tell an abort apart from a normal finish — so every aborted mission
+    was recorded as "completed".
+    """
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 class MissionControl:
     def __init__(self):
         self._stop = threading.Event()

@@ -2,7 +2,7 @@ import os
 import time
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from PIL import Image
 from io import BytesIO
 from pathlib import Path
@@ -21,7 +21,7 @@ class AgentTracker:
 
     def __init__(self, agent_id=None, browser=None):
         self.agent_id = agent_id or f"agent_{str(uuid.uuid4())[:8]}"
-        self.session_start = datetime.now()
+        self.session_start = datetime.now(timezone.utc)
         self.browser = browser  # Optional SoMBrowser instance
         
         # Construct the Hive Bucket Path
@@ -60,7 +60,7 @@ class AgentTracker:
         Returns:
             dict: {"filepath": str, "screenshot_bytes": bytes, "relative_path": str} or None
         """
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         
         # Always save metadata
         if metadata:

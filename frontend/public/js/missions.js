@@ -1,5 +1,6 @@
-import { BACKEND_URL, state } from './config.js';
+import { BACKEND_URL, state, fmtDateTime } from './config.js';
 import { addToFeed } from './feed.js';
+import { connectToSSE } from './sse.js';
 
 export function updateMissionStatus(data) {
     console.log('Mission status update:', data);
@@ -12,111 +13,173 @@ export function updateMissionStatus(data) {
     }
 }
 
-export async function loadMissionHistory() {
+// Status badge styling shared by the selector and the feed header.
+const STATUS_STYLE = {
+    running:   'bg-blue-900 text-blue-200',
+    executing: 'bg-blue-900 text-blue-200',
+    planning:  'bg-yellow-900 text-yellow-200',
+    paused:    'bg-yellow-900 text-yellow-200',
+    completed: 'bg-green-900 text-green-200',
+    stopped:   'bg-gray-700 text-gray-300',
+    aborted:   'bg-orange-900 text-orange-200',
+    failed:    'bg-red-900 text-red-200',
+};
+
+function hostOf(url) {
+    try { return new URL(url).host; } catch { return url || 'unknown'; }
+}
+
+// Rebuild the session picker. Called on boot and whenever a mission starts or ends,
+// so a newly started mission shows up without a reload.
+export async function loadMissionHistory(selectId = null) {
     try {
         const response = await fetch(`${BACKEND_URL}/api/missions`);
         if (!response.ok) return;
 
         const missions = await response.json();
-        const selector = document.getElementById('mission-selector');
+        state.missions = missions;
 
-        missions.forEach(mission => {
-            const option = document.createElement('option');
-            option.value = mission.id;
-            option.textContent = `Mission ${mission.id}: ${mission.target_url.substring(0, 30)}... (${mission.status})`;
-            selector.appendChild(option);
-        });
+        const selector = document.getElementById('mission-selector');
+        const previous = selectId ?? selector.value;
+        selector.innerHTML = '<option value="live">🔴 Live (follow newest)</option>';
+
+        missions
+            .slice()
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+            .forEach(mission => {
+                const option = document.createElement('option');
+                option.value = mission.id;
+                option.textContent =
+                    `#${mission.id} · ${hostOf(mission.target_url)} · ${mission.status} · ${fmtDateTime(mission.created_at)}`;
+                selector.appendChild(option);
+            });
+
+        // Keep the user's selection across a refresh.
+        if (previous && [...selector.options].some(o => o.value === String(previous))) {
+            selector.value = String(previous);
+        }
     } catch (error) {
         console.error('Failed to load mission history:', error);
+    }
+}
+
+// Update the "which session am I looking at" header above the feed.
+export function setFeedSession(mission) {
+    const label = document.getElementById('feed-session');
+    const badge = document.getElementById('feed-session-status');
+    if (!label || !badge) return;
+
+    if (!mission) {
+        label.textContent = 'Live — following the newest mission';
+        badge.textContent = 'live';
+        badge.className = 'text-xs px-2 py-1 rounded-full bg-gray-700 text-gray-300 shrink-0';
+        return;
+    }
+
+    label.textContent = `Mission #${mission.id} · ${mission.target_url} · started ${fmtDateTime(mission.created_at)}`;
+    badge.textContent = mission.status;
+    badge.className =
+        `text-xs px-2 py-1 rounded-full shrink-0 ${STATUS_STYLE[mission.status] || 'bg-gray-700 text-gray-300'}`;
+}
+
+/**
+ * Re-read the mission and update the session badge and the picker label.
+ * Called on terminal/status events so a finished run stops reading as "running".
+ */
+export async function refreshSessionHeader(missionId) {
+    if (!missionId || missionId !== state.currentMissionId) return;
+    try {
+        const mission = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}`)).json();
+        setFeedSession(mission);
+        await loadMissionHistory(missionId);
+    } catch (error) {
+        console.warn('Could not refresh session header:', error);
     }
 }
 
 export function initMissionSelector() {
     document.getElementById('mission-selector').addEventListener('change', async (e) => {
         if (e.target.value === 'live') {
-            // Switching back to live mission view
-            state.currentMissionId = null;
-            document.getElementById('feed-content').innerHTML = '';
-
-            // Hide controls since no mission is running yet
-            updateMissionControls(null);
-
+            await selectLive();
             return;
         }
-
-        const missionId = parseInt(e.target.value);
-        await loadHistoricMission(missionId);
+        await selectMission(parseInt(e.target.value));
     });
 }
 
-async function loadHistoricMission(missionId) {
-    try {
-        console.log('Loading historic mission:', missionId);
-        state.currentMissionId = missionId;  // Set to historical mission
+// Follow whatever mission is newest, rather than a specific session.
+export async function selectLive() {
+    state.currentMissionId = null;
+    document.getElementById('feed-content').innerHTML = '';
+    setFeedSession(null);
+    updateMissionControls(null);
+    connectToSSE();            // global stream
+}
 
-        // 1. Clear current feed
+/**
+ * Switch the feed to one mission's session.
+ *
+ * The feed is rebuilt from the stored activity log, then the live stream is
+ * re-pointed at that mission, so the view only ever contains events for the
+ * selected session - live and historical missions render identically.
+ */
+export async function selectMission(missionId) {
+    try {
+        state.currentMissionId = missionId;
+
         const feedContent = document.getElementById('feed-content');
         feedContent.innerHTML = '';
 
-        // 2. Load mission details
-        const missionResponse = await fetch(`${BACKEND_URL}/api/missions/${missionId}`);
-        const mission = await missionResponse.json();
+        const mission = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}`)).json();
+        setFeedSession(mission);
 
-        // 3. Load activity feed history
-        const activityResponse = await fetch(`${BACKEND_URL}/api/missions/${missionId}/activity`);
-        const activityLogs = await activityResponse.json();
+        // Sync the dropdown when selection came from elsewhere (e.g. a new mission).
+        const selector = document.getElementById('mission-selector');
+        if (selector && selector.value !== String(missionId)) selector.value = String(missionId);
 
-        // Display header message
-        addToFeed({
-            message: `📜 Viewing historical mission ${missionId}: ${mission.target_url} (${mission.status})`,
-            timestamp: new Date().toISOString(),
-            type: 'info'
-        });
-
-        // Display all historical activity logs
-        activityLogs.forEach(log => {
+        const events = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}/activity`)).json();
+        let lastLogId = 0;
+        events.forEach(event => {
+            if (event._log_id) lastLogId = Math.max(lastLogId, event._log_id);
             addToFeed({
-                message: log.message,
-                timestamp: log.timestamp,
-                type: log.message_type,
-                screenshot: log.screenshot_path ? { path: log.screenshot_path } : null
+                message: event.message,
+                timestamp: event.timestamp,
+                type: event.type,
+                screenshot: event.screenshot || null
             });
         });
 
-        // 4. Load iterations/plan if available
-        try {
-            const iterationsResponse = await fetch(`${BACKEND_URL}/api/missions/${missionId}/iterations`);
-            const iterations = await iterationsResponse.json();
+        if (!events.length) {
+            addToFeed({
+                message: `📜 Mission #${missionId} has no recorded activity yet.`,
+                timestamp: new Date().toISOString(),
+                type: 'info'
+            });
+        }
 
-            if (iterations && iterations.length > 0) {
-                updateIterationsDisplay(iterations);
-            }
+        // Resume the live stream after what we just replayed, so nothing is
+        // duplicated and nothing published mid-switch is missed.
+        connectToSSE(missionId, lastLogId);
+
+        const active = ['planning', 'running', 'executing', 'paused'].includes(mission.status);
+        updateMissionControls(active ? missionId : null);
+
+        try {
+            const iterations = await (await fetch(`${BACKEND_URL}/api/missions/${missionId}/iterations`)).json();
+            if (iterations && iterations.length) updateIterationsDisplay(iterations);
         } catch (err) {
             console.warn('No iterations for this mission:', err);
         }
-
-        // 5. Load evidence/findings
-        try {
-            const evidenceResponse = await fetch(`${BACKEND_URL}/api/missions/${missionId}/evidence`);
-            const evidence = await evidenceResponse.json();
-
-            updateEvidenceDisplay(evidence);
-        } catch (err) {
-            console.warn('No evidence for this mission:', err);
-        }
-
-        // 6. Hide mission controls for historical missions
-        updateMissionControls(null);
-
     } catch (error) {
-        console.error('Failed to load historic mission:', error);
+        console.error('Failed to select mission:', error);
         addToFeed({
-            message: `❌ Failed to load mission ${missionId}: ${error.message}`,
+            message: `❌ Could not load mission ${missionId}: ${error.message}`,
             timestamp: new Date().toISOString(),
             type: 'error'
         });
     }
 }
+
 
 // Helper function to update mission control button visibility
 function updateMissionControls(missionState) {
@@ -222,6 +285,10 @@ export function initNewMissionButton() {
 
             const data = await response.json();
             state.currentMissionId = data.mission_id;
+
+            // Make the new run a selectable session and show only its events.
+            await loadMissionHistory(data.mission_id);
+            await selectMission(data.mission_id);
 
             // Show controls for new running mission
             updateMissionControls({ status: 'running' });

@@ -108,7 +108,7 @@ class FindingRepository:
         }
 
         # Filename includes timestamp for chronological sorting in file explorer
-        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{finding_id[:8]}.json"
+        filename = f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{finding_id[:8]}.json"
         filepath = type_dir / filename
 
         try:

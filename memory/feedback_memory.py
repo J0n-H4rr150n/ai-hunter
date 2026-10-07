@@ -2,6 +2,7 @@ import json
 import time
 import os
 import glob
+import logging
 import numpy as np
 from typing import List, Dict, Tuple, Optional
 
@@ -18,6 +19,9 @@ if EMBEDDINGS_ENABLED:
         print("[FeedbackMemory] Warning: TensorFlow Hub not available, embeddings disabled")
 else:
     print("[FeedbackMemory] Embeddings disabled via DISABLE_EMBEDDINGS env var")
+
+logger = logging.getLogger(__name__)
+
 
 class FeedbackMemory:
     def __init__(self, project_id: str = None, base_path=None):
@@ -100,7 +104,8 @@ class FeedbackMemory:
         try:
             # TensorFlow USE returns tensor, convert to list
             return np.array(self.model([text])[0]).tolist()
-        except:
+        except Exception as e:
+            logger.warning("embedding failed, semantic recall degraded: %s", e, exc_info=True)
             return None 
 
     def store_feedback(self, tool: str, thought: str, action_val: str, rating: float, reason: str):

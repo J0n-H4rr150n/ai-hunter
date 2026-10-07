@@ -21,23 +21,6 @@ services:
     networks:
       - ai-hunter-network
 
-  # Redis for caching and real-time updates
-  redis:
-    image: redis:7-alpine
-    container_name: ai-hunter-redis
-    ports:
-      - "33002:6379"
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - ai-hunter-network
-
   # Backend API (Python/FastAPI)
   backend:
     build:
@@ -46,7 +29,6 @@ services:
     container_name: ai-hunter-backend
     environment:
       - DATABASE_URL=postgresql://hunter:hunter_pass_dev@postgres:5432/ai_hunter
-      - REDIS_URL=redis://redis:6379
       # llama-server runs on the host, so reach it through the gateway alias below.
       - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:30087/v1}
       - LLM_MODEL=${LLM_MODEL:-qwen38-27b-q8}
@@ -60,8 +42,6 @@ services:
       - ./hive_bucket:/app/hive_bucket  # Hive bucket for screenshots, logs, etc.
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     networks:
       - ai-hunter-network
@@ -88,7 +68,6 @@ services:
 
 volumes:
   postgres_data:
-  redis_data:
 
 networks:
   ai-hunter-network:

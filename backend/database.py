@@ -634,20 +634,27 @@ class Database:
     async def get_mission_activity_logs(
         self, 
         mission_id: int,
-        limit: int = 1000
+        limit: int = 1000,
+        after_id: int = 0
     ) -> List[Dict[str, Any]]:
-        """Get all activity logs for a mission"""
+        """
+        Get activity logs for a mission.
+
+        `after_id` lets a reconnecting client fetch only what it missed. Ordering is
+        by id as well as timestamp, since events published in the same millisecond
+        would otherwise come back in an arbitrary order.
+        """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id, message, message_type, screenshot_path, 
                        metadata, timestamp
                 FROM activity_logs
-                WHERE mission_id = $1
-                ORDER BY timestamp ASC
-                LIMIT $2
+                WHERE mission_id = $1 AND id > $2
+                ORDER BY timestamp ASC, id ASC
+                LIMIT $3
                 """,
-                mission_id, limit
+                mission_id, after_id, limit
             )
             results = []
             for row in rows:
