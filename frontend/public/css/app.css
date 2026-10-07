@@ -386,3 +386,11 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
     .kv dt { margin-top: .45rem; }
     .kv dd { padding-bottom: .3rem; }
 }
+
+/* Prose snippet inside a card. Distinct from .k, which is an uppercase field
+   label and turns sentences into shouting. */
+.note {
+    color: var(--dim);
+    font-size: .74rem;
+    line-height: 1.35;
+}

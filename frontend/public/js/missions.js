@@ -59,9 +59,62 @@ export async function loadMissionHistory(selectId = null) {
         if (previous && [...selector.options].some(o => o.value === String(previous))) {
             selector.value = String(previous);
         }
+
+        renderMissionList(missions);
     } catch (error) {
         console.error('Failed to load mission history:', error);
+        const host = document.getElementById('mission-list');
+        if (host) host.innerHTML = `<p class="empty">Could not load missions: ${error.message}</p>`;
     }
+}
+
+/**
+ * The browsable list of sessions.
+ *
+ * The Missions tab had an empty "All missions" region: the markup existed but
+ * nothing ever populated it, so the only way to reach a session was a dropdown
+ * that is easy to miss on a phone.
+ */
+export function renderMissionList(missions) {
+    const host = document.getElementById('mission-list');
+    if (!host) return;
+
+    if (!missions || !missions.length) {
+        host.innerHTML = '<p class="empty">No missions yet. Use + to start one.</p>';
+        return;
+    }
+
+    const ACCENT = {
+        running: 'ok', executing: 'ok', planning: 'ok', paused: 'ok',
+        completed: 'ok', failed: 'err', aborted: 'err', stopped: '',
+    };
+
+    const sorted = missions.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    host.innerHTML = sorted.map(m => `
+        <div class="item clickable ${ACCENT[m.status] || ''}" data-mission="${m.id}">
+            <div class="item-head">
+                <strong class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">#${m.id} · ${escapeHtml(hostOf(m.target_url))}</strong>
+                <span class="item-time">${escapeHtml(fmtDateTime(m.created_at))}</span>
+            </div>
+            <div style="margin-top:.25rem">
+                <span class="pill ${STATUS_STYLE[m.status] || ''}">${escapeHtml(m.status)}</span>
+                ${m.instructions ? `<span class="note">${escapeHtml(String(m.instructions).slice(0, 90))}…</span>` : ''}
+            </div>
+        </div>`).join('');
+
+    host.querySelectorAll('[data-mission]').forEach(el => {
+        el.addEventListener('click', async () => {
+            await selectMission(Number(el.dataset.mission));
+            // Jump to the feed: picking a session means wanting to see it.
+            const { showTab } = await import('./tabs.js');
+            showTab('feed');
+        });
+    });
+}
+
+function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 // Update the "which session am I looking at" header above the feed.
