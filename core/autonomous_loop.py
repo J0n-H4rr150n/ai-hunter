@@ -22,6 +22,56 @@ from core.playbook_executor import PlaybookExecutor, PlaybookExecutionError
 logger = logging.getLogger(__name__)
 
 
+# Map the verbs the planner writes onto the task types run_loop understands.
+_STEP_ACTION_HINTS = (
+    (("fuzz", "intruder", "inject", "payload", "brute", "enumerat"), "fuzz"),
+    (("scan", "navigate", "browse", "inspect", "view", "check", "recon", "crawl",
+      "discover", "dismiss", "login", "search"), "scan"),
+)
+
+
+def parse_plan_steps(steps) -> list:
+    """
+    Normalise a plan's steps into task dicts.
+
+    The planner returns `steps` as a single string of numbered lines. Iterating it
+    directly yields *characters*, so every character became its own task - a plan
+    of 600 characters produced 600 one-letter "analyze" tasks and the mission span
+    forever without doing anything. Accept either a string or a list.
+    """
+    if not steps:
+        return []
+
+    if isinstance(steps, str):
+        import re
+        lines = [ln.strip() for ln in steps.splitlines()]
+        # Drop the list marker; keep the instruction.
+        cleaned = [re.sub(r"^\s*(?:\d+[.)]|[-*+])\s*", "", ln) for ln in lines if ln.strip()]
+        steps = [ln for ln in cleaned if ln]
+
+    tasks = []
+    for step in steps:
+        if isinstance(step, dict):
+            tasks.append({
+                "type": step.get("action", "analyze"),
+                "target": step.get("target"),
+                "description": step.get("description") or str(step),
+            })
+            continue
+
+        text = str(step).strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        task_type = "analyze"
+        for keywords, mapped in _STEP_ACTION_HINTS:
+            if any(k in lowered for k in keywords):
+                task_type = mapped
+                break
+        tasks.append({"type": task_type, "target": None, "description": text})
+    return tasks
+
+
 class AutonomousLoop:
     """
     The main execution loop for the autonomous agent.
@@ -832,20 +882,15 @@ class AutonomousLoop:
         
         # Set up planner with iteration plan steps
         if plan.get('steps'):
-            self.log_to_ui(f"[Auto] 📝 Loaded {len(plan['steps'])} steps from iteration plan")
+            self.log_to_ui(f"[Auto] 📝 Loaded {len(parse_plan_steps(plan['steps']))} steps from iteration plan")
             # Convert plan steps to planner tasks
-            for step in plan['steps']:
-                if isinstance(step, dict):
-                    task_type = step.get('action', 'analyze')
-                    target = step.get('target', self.planner.get_mission().get('target_url'))
-                    description = step.get('description', str(step))
-                else:
-                    # Simple string step
-                    task_type = 'analyze'
-                    target = self.planner.get_mission().get('target_url')
-                    description = str(step)
-                
-                self.planner.add_task(task_type, target, description)
+            default_target = self.planner.get_mission().get('target_url')
+            for task in parse_plan_steps(plan['steps']):
+                self.planner.add_task(
+                    task['type'],
+                    task['target'] or default_target,
+                    task['description'],
+                )
         
         # Execute the iteration using the existing run_loop.
         # Off the event loop: run_loop blocks, and the API (including /stop) plus the
