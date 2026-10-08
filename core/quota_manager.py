@@ -3,6 +3,7 @@ import os
 from datetime import datetime, date
 from pathlib import Path
 from config.config import Config
+from config.safety import HARD_CAPS
 
 class QuotaManager:
     """
@@ -18,6 +19,9 @@ class QuotaManager:
         "spending_daily_usd": 5.00
     }
 
+    # Used for an action the planner gave no budget for.
+    DEFAULT_PER_ACTION_LIMIT = 25
+
     def __init__(self, agent_id="global"):
         self.agent_id = agent_id
         
@@ -28,6 +32,7 @@ class QuotaManager:
         
         self._ensure_storage()
         self.usage = self._load_state()
+        self.custom_limits = {}
 
     def _ensure_storage(self):
         """Ensures the state directory exists."""
@@ -81,17 +86,41 @@ class QuotaManager:
         Returns:
             bool: True if proceed is allowed, False if limit exceeded.
         """
-        # Map metric to config limit key
-        limit_key = f"{metric}_daily"
-        limit = getattr(Config, limit_key.upper(), self.DEFAULT_LIMITS.get(limit_key))
-        
+        limit = self._limit_for(metric)
         current_usage = self.usage.get(metric, 0)
-        
+
         if current_usage >= limit:
             print(f"[Quota] 🛑 LIMIT REACHED: {metric} ({current_usage}/{limit})")
             return False
-        
+
         return True
+
+    def _limit_for(self, metric: str) -> float:
+        """
+        Resolve the ceiling for a metric.
+
+        Order matters: a budget approved with the plan beats a global default.
+        set_limit() stored those in custom_limits, but check_limit never read it,
+        so the per-plan budgets were accepted and then ignored entirely.
+
+        An unknown metric previously resolved to None and the comparison raised
+        TypeError, which took down every caller that asked about anything outside
+        the three built-in metrics.
+        """
+        custom = getattr(self, "custom_limits", {})
+        if metric in custom:
+            return custom[metric]
+
+        limit_key = f"{metric}_daily"
+        configured = getattr(Config, limit_key.upper(), None)
+        if configured is not None:
+            return configured
+        if limit_key in self.DEFAULT_LIMITS:
+            return self.DEFAULT_LIMITS[limit_key]
+
+        # Per-action budgets the planner may not have specified. Fall back to the
+        # engine's hard cap rather than refusing outright or crashing.
+        return HARD_CAPS.get(metric, self.DEFAULT_PER_ACTION_LIMIT)
 
     def tally(self, metric: str, amount: float = 1.0):
         """
@@ -103,6 +132,7 @@ class QuotaManager:
         """
         # Reload state in case other processes updated it (simple concurrency)
         self.usage = self._load_state()
+        self.custom_limits = {}
         
         if metric not in self.usage:
             self.usage[metric] = 0
@@ -123,10 +153,6 @@ class QuotaManager:
             tool_name (str): The tool or metric name (e.g., 'actions', 'llm_tokens')
             limit (int): The new limit value
         """
-        # Store custom limits in the limits dict
-        if not hasattr(self, 'custom_limits'):
-            self.custom_limits = {}
-        
         self.custom_limits[tool_name] = limit
         
         if Config.DEBUG:

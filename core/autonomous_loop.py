@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import asyncio
 from core.planner import Planner
@@ -12,6 +13,7 @@ from core.browser_thread import ThreadedBrowser
 from core.mission_control import MissionControl, MissionStopped, MissionAborted
 from core.tool_recorder import ToolRecorder, NULL_RECORDER
 from core.llm_recorder import LLMRecorder, NULL_LLM_RECORDER
+from core.agent_executor import AgentExecutor
 from memory.finding_repository import FindingRepository
 from core.agent_tracker import AgentTracker
 from config.config import Config
@@ -23,10 +25,14 @@ logger = logging.getLogger(__name__)
 
 
 # Map the verbs the planner writes onto the task types run_loop understands.
+#
+# Anything that names a concrete interaction — a path, a field, a credential —
+# goes to the agent, which can actually carry it out. Only broad sweeps stay with
+# the generic scanner and fuzzer. Previously every one of these became a scan of
+# the base URL, so a step naming /api/v1/profile was answered by re-scanning "/".
 _STEP_ACTION_HINTS = (
-    (("fuzz", "intruder", "inject", "payload", "brute", "enumerat"), "fuzz"),
-    (("scan", "navigate", "browse", "inspect", "view", "check", "recon", "crawl",
-      "discover", "dismiss", "login", "search"), "scan"),
+    (("fuzz all", "fuzz every", "fuzz the parameters", "brute force the"), "fuzz"),
+    (("full scan", "fingerprint", "tech stack", "port scan"), "scan"),
 )
 
 
@@ -63,7 +69,7 @@ def parse_plan_steps(steps) -> list:
         if not text:
             continue
         lowered = text.lower()
-        task_type = "analyze"
+        task_type = "agent"          # the agent can follow an instruction; a scan cannot
         for keywords, mapped in _STEP_ACTION_HINTS:
             if any(k in lowered for k in keywords):
                 task_type = mapped
@@ -107,6 +113,8 @@ class AutonomousLoop:
         self.tool_recorder = NULL_RECORDER
         # Writes every model call to llm_traces.
         self.llm_recorder = NULL_LLM_RECORDER
+        # Built on first use; one per mission so it keeps its context.
+        self._security_agent = None
         self.web_approval_callback = None  # For plan approval
         self.tool_approval_callback = None  # For HITL tool approval
         self.hitl_enabled = False  # HITL flag
@@ -438,7 +446,9 @@ class AutonomousLoop:
 
             # 2. Execute Logic
             try:
-                if task['type'] == 'scan':
+                if task['type'] == 'agent':
+                    self._execute_agent(task)
+                elif task['type'] == 'scan':
                     self._execute_scan(task)
                 elif task['type'] == 'fuzz':
                     self._execute_fuzz(task)
@@ -454,6 +464,51 @@ class AutonomousLoop:
             
             # Short sleep to prevent CPU spinning if logic is instant
             time.sleep(1)
+
+    def _execute_agent(self, task):
+        """
+        Hand a plan step to SecurityAgent and let it work the page.
+
+        This is the path that actually follows an instruction: the model sees the
+        screenshot and the interactive elements, chooses one concrete action at a
+        time, and observes the result before choosing the next.
+        """
+        description = task.get('description') or 'Investigate the target'
+        url = task.get('target') or self.planner.get_mission().get('target_url')
+
+        if not self.browser:
+            self.log_to_ui("[Agent] ⚠️ No browser available; skipping step.")
+            self.planner.complete_task(task['id'], "Skipped: no browser")
+            return
+
+        # Start from the target so each step begins somewhere known.
+        if url:
+            try:
+                self.browser.navigate(url)
+            except Exception as e:
+                logger.warning("could not open %s for agent step: %s", url, e)
+
+        if self._security_agent is None:
+            from agents.agent_brain import SecurityAgent
+            self._security_agent = SecurityAgent(
+                on_progress=self._llm_progress("agent"),
+                recorder=self.llm_recorder,
+            )
+            self._security_agent.memory = getattr(self, 'feedback_memory', None)
+
+        self._security_agent.set_mission_plan(self.planner.get_mission().get('goal', ''))
+
+        self.log_to_ui(f"[Agent] 🎯 {description}")
+        executor = AgentExecutor(self, max_steps=int(os.getenv('AGENT_MAX_STEPS', '10')))
+        result = executor.run(goal=description, agent=self._security_agent)
+
+        self.log_to_ui(
+            f"[Agent] {description} → {result.status} "
+            f"after {result.steps} step(s), {result.findings} finding(s)"
+        )
+        self.planner.complete_task(
+            task['id'], f"{result.status}: {result.findings} finding(s)"
+        )
 
     def _execute_scan(self, task):
         url = task['target']
